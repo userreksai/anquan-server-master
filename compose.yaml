@@ -1,0 +1,21 @@
+services:
+  master:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "10110:10110"
+      - "55555:55555/udp"
+    environment:
+      ANQUAN_DATA_DIR: /data/anquan
+      ANQUAN_HTTP_ADDR: :10110
+      ANQUAN_UDP_ADDR: :55555
+    volumes:
+      - /data/anquan:/data/anquan
+    stop_grace_period: 20s
+  web:
+    build: ../anquan-server-web
+    restart: unless-stopped
+    ports:
+      - "10111:10111"
+    depends_on:
+      - master
