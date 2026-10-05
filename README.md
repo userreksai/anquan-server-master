@@ -4,7 +4,36 @@ Go 主控通过 `55555/udp` 接收 Anqu Agent 的巡检摘要、文件/进程告
 
 SQLite 数据文件为 `/data/anquan/anquan.db`。第一次启动自动创建目录、表和 `admin` 账号，默认密码 **`admin1818.`**（含末尾英文句点）。再次启动保留原密码、会话及全部数据。密码使用 bcrypt，浏览器使用 HttpOnly / SameSite=Strict Cookie，会话有效期 24 小时。
 
-## 运行
+## 服务器独立部署脚本（推荐）
+
+原生部署，不使用 Docker。支持 Ubuntu 22.04+/Debian 12+、systemd、x86_64 或 arm64。脚本自动安装基础依赖及独立的 Go 工具链，编译后注册 `anquan-master` systemd 服务；前端可以部署到另一台服务器。需要能访问软件源、go.dev 和 Go 模块代理。
+
+```sh
+sudo mkdir -p /opt/anquan
+sudo apt-get update
+sudo apt-get install -y git
+cd /opt/anquan
+sudo git clone https://github.com/userreksai/anquan-server-master.git
+cd anquan-server-master
+sudo sh deploy/deploy.sh
+```
+
+脚本编译、启动服务并等待健康检查通过，监听 `10110/TCP` 和 `55555/UDP`，首次自动初始化 `/data/anquan`。对 Agent 开通 UDP 55555，对前端服务器开通 TCP 10110。服务器重启后服务自动启动。Go 安装在 `/opt/anquan-tools/go1.27.1`，不覆盖系统现有工具链，下载后验证[官方 SHA256](https://go.dev/dl/?mode=json&include=all)。
+
+更新、查看日志、重置管理员密码：
+
+```sh
+cd /opt/anquan/anquan-server-master
+sudo git pull --ff-only
+sudo sh deploy/deploy.sh
+sudo systemctl status anquan-master --no-pager
+sudo journalctl -u anquan-master -f
+sudo anquan-reset-password
+```
+
+更新保留 `/data/anquan` 的数据库、密码和通知配置。已有 `anquan-master` systemd 服务会直接更新；如有其他方式运行的旧主控，应先停止旧实例。配置可写入 `/etc/anquan-master.env`，与下方参数表一致；脚本健康检查使用默认的本地 HTTP 10110。失败时返回非零退出码，可通过日志命令排查。
+
+## 源码运行
 
 需要 Go 1.27.1 或更新版本；SQLite 为纯 Go 驱动，无需系统 sqlite 或 C 编译器。
 
