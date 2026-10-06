@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 		s.respond(w, v, e)
 	})
 	mux.HandleFunc("POST /api/webhooks", s.saveWebhook)
+	mux.HandleFunc("POST /api/webhooks/test", s.testWebhookDraft)
 	mux.HandleFunc("PUT /api/webhooks/{id}", s.saveWebhook)
 	mux.HandleFunc("DELETE /api/webhooks/{id}", s.deleteWebhook)
 	mux.HandleFunc("POST /api/webhooks/{id}/test", s.testWebhook)
@@ -279,9 +280,7 @@ func validateWebhook(w *Webhook) error {
 	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "" {
 		return errors.New("通知地址必须为 HTTP(S) URL，不能包含用户信息或片段")
 	}
-	if w.Format == "" {
-		w.Format = "feishu"
-	}
+	w.Format = webhookFormat(*w)
 	if w.Format != "feishu" && w.Format != "wecom" && w.Format != "generic" {
 		return errors.New("通知格式无效")
 	}
@@ -351,17 +350,64 @@ func (s *Server) testWebhook(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, err)
 		return
 	}
-	event := Event{EventID: "test-" + strconv.FormatInt(time.Now().UnixNano(), 10), MachineIP: "127.0.0.1", Host: "安全中心", Type: "alert", Time: time.Now().UTC(), Data: json.RawMessage(`{"module":"test","kind":"webhook_test","target":"-","message":"这是一条来自安全中心的测试通知"}`)}
-	err = PostEvent(r.Context(), s.Client, hook, event)
-	if err != nil {
-		_, _ = s.Store.DB.ExecContext(r.Context(), `UPDATE webhooks SET last_error=? WHERE id=?`, err.Error(), id)
-		fail(w, 502, err.Error())
+	var body struct {
+		Message string `json:"message"`
+	}
+	if r.ContentLength != 0 && !decode(w, r, &body) {
 		return
 	}
-	_, err = s.Store.DB.ExecContext(r.Context(), `UPDATE webhooks SET last_error='',last_success_at=? WHERE id=?`, stamp(time.Now()), id)
-	if err != nil {
-		s.respond(w, nil, err)
+	s.sendWebhookTest(w, r, hook, body.Message)
+}
+
+func (s *Server) testWebhookDraft(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name    string `json:"name"`
+		URL     string `json:"url"`
+		Format  string `json:"format"`
+		Enabled *bool  `json:"enabled"`
+		Message string `json:"message"`
+	}
+	if !decode(w, r, &body) {
 		return
 	}
-	writeJSON(w, 200, map[string]string{"message": "测试通知发送成功"})
+	if strings.TrimSpace(body.Name) == "" {
+		body.Name = "Webhook 测试"
+	}
+	hook := Webhook{Name: body.Name, URL: body.URL, Format: body.Format}
+	if err := validateWebhook(&hook); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	s.sendWebhookTest(w, r, hook, body.Message)
+}
+
+func (s *Server) sendWebhookTest(w http.ResponseWriter, r *http.Request, hook Webhook, message string) {
+	if len(message) > 10000 {
+		fail(w, 400, "测试消息最多 10000 字节")
+		return
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "这是一条来自安全中心的测试通知。实际告警会包含机器 IP、主机、类型、目标、时间、描述和变更前后值。"
+	}
+	data, _ := json.Marshal(map[string]string{"module": "test", "kind": "webhook_test", "target": hook.Name, "message": message})
+	event := Event{EventID: "test-" + strconv.FormatInt(time.Now().UnixNano(), 10), MachineIP: "127.0.0.1", Host: "安全中心主控（测试）", Type: "alert", Time: time.Now().UTC(), Data: data}
+	result, sendErr := SendEvent(r.Context(), s.Client, hook, event)
+	if hook.ID != 0 {
+		var err error
+		if sendErr != nil {
+			_, err = s.Store.DB.ExecContext(r.Context(), `UPDATE webhooks SET last_error=? WHERE id=?`, sendErr.Error(), hook.ID)
+		} else {
+			_, err = s.Store.DB.ExecContext(r.Context(), `UPDATE webhooks SET last_error='',last_success_at=? WHERE id=?`, stamp(time.Now()), hook.ID)
+		}
+		if err != nil {
+			s.Logger.Error("persist webhook test result", "webhook_id", hook.ID, "error", err)
+			result.Message += "；测试结果保存失败，请刷新页面检查"
+		}
+	}
+	status := http.StatusOK
+	if sendErr != nil {
+		status = http.StatusBadGateway
+		s.Logger.Warn("webhook test failed", "webhook_id", hook.ID, "format", result.Format, "http_status", result.HTTPStatus, "error", sendErr)
+	}
+	writeJSON(w, status, result)
 }
