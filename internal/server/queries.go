@@ -221,6 +221,7 @@ func scanWebhook(row scanner) (Webhook, error) {
 	var created, updated int64
 	var success sql.NullInt64
 	err := row.Scan(&w.ID, &w.Name, &w.URL, &w.Format, &w.Enabled, &created, &updated, &w.LastError, &success, &w.PendingCount)
+	w.Format = webhookFormat(w)
 	w.CreatedAt = unstamp(created)
 	w.UpdatedAt = unstamp(updated)
 	if success.Valid {

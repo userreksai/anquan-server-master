@@ -24,7 +24,8 @@
 | POST | `/api/webhooks` | `{name,url,format?,enabled?}` |
 | PUT | `/api/webhooks/{id}` | 同上，完整替换配置 |
 | DELETE | `/api/webhooks/{id}` | 删除通知配置和队列 |
-| POST | `/api/webhooks/{id}/test` | 向该 URL 主动发送测试通知，失败 502 |
+| POST | `/api/webhooks/{id}/test` | 测试已保存配置；空请求体或 `{message?}`；发送失败 502 |
+| POST | `/api/webhooks/test` | 测试当前表单 `{url,name?,format?,enabled?,message?}`，不保存；发送失败 502 |
 
 `type` 为 `alert`、`ssh_login`、`scan_summary`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。按事件发生时间倒序、整数 ID 倒序稳定分页；登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
 
@@ -33,5 +34,42 @@
 事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 原样保留 Agent 对象，不接受经 HTTP 修改检测证据。
 
 Webhook 字段：`id,name,url,format,enabled,created_at,updated_at,last_error,last_success_at,pending_count`。`format` 可选 `feishu`（默认）、`wecom`、`generic`，`enabled` 默认 true；名称最多 128 字节，URL 仅允许 HTTP(S)，禁止 URL 中的用户名密码与片段。可配置多个独立通知地址。
+
+`feishu` 同时用于飞书和 Lark，请求格式为 `{"msg_type":"text","content":{"text":"告警正文"}}`；API 接受 `lark` 别名。官方 Lark/飞书 `/open-apis/bot/v2/hook/…` 地址自动归一为 `feishu`，读取旧配置和发送已有待发任务时同样生效。
+
+两种测试接口实际调用同一发送器。`message` 最多 10000 字节，省略时发送安全中心默认测试文案；草稿的 `name` 可省略，`enabled` 不限制主动测试。测试不产生告警记录或重试队列，只有已保存配置测试会更新 `last_error/last_success_at`。成功 HTTP 200，发送失败 HTTP 502，均返回：
+
+```json
+{
+  "success": true,
+  "message": "Webhook 接收端已确认接收测试消息，请到对应群查看",
+  "format": "feishu",
+  "http_status": 200,
+  "business_code": 0,
+  "duration_ms": 120,
+  "text": "【安全中心告警】\n机器 IP：127.0.0.1\n主机：安全中心主控（测试）\n..."
+}
+```
+
+`text` 是本次发送器构造的正文（连接失败时为尝试发送的正文），与发送 JSON 中的文本相同。`http_status` 在收到 HTTP 响应后才存在；`business_code` 在解析到数值业务码后才存在，判断时不能把 0 当作缺失。`duration_ms` 总是返回。参数错误/未登录等请求未进入发送器的情况，仍返回原有 `{message}` 错误结构。
+
+Lark/飞书即使 HTTP 200，业务码非零、缺失或无效仍返回 `success:false`、HTTP 502；企业微信要求 `errcode=0`。`generic` 检测到 `code/StatusCode/errcode` 时同样要求数值 0；没有业务码时 HTTP 2xx 表示请求已接受，`message` 会说明无法确认业务接收。前端应显示实际消息和响应信息，不应仅凭 HTTP 200 或缺少响应字段回退为“发送成功”。完整 URL 和原始接收端响应不包含在诊断中。
+
+自动通知正文示例（`before/after` 有值时才追加，时间为 UTC）：
+
+```text
+【安全中心告警】
+机器 IP：10.20.30.40
+主机：node-a
+类型：files / modified
+目标：/etc/app.conf
+时间：2026-10-06T08:00:00Z
+内容：monitored file modified
+变更前：900150983cd24fb0d6963f7d28e17f72
+变更后：d41d8cd98f00b204e9800998ecf8427e
+事件 ID：alert-example
+```
+
+仅新产生的 `alert` 发往当时已启用的配置；历史告警、普通 SSH 登录、巡检摘要和心跳不发送。测试成功不创建配置，草稿测试后仍需保存才能接收后续自动告警。
 
 总览字段：`machines,online_machines,events,alerts,open_alerts,ssh_logins,pending_notifications`。待通知数量包括已暂停地址的未发送记录。
