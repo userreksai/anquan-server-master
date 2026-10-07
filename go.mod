@@ -3,11 +3,14 @@ module github.com/userreksai/anquan-server-master
 go 1.27.1
 
 require (
+	filippo.io/age v1.3.2
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.60.1
 )
 
 require (
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

@@ -1,5 +1,13 @@
 # 安全中心 · Master
 
+## Agent age 配置加密
+
+新增已登录管理员接口 `GET/POST /api/settings/agent-encryption`，沿用会话鉴权和同源校验。POST 请求只包含 `{"yaml":"配置原文"}`；响应包含 `ciphertext` 和 `filename: config.age`，GET 仅返回文件名。支持最大 4 MiB 单份 YAML 映射，检查语法与重复字段；Agent 启动时继续校验完整配置字段。
+
+接口使用代码内置的 age X25519 公钥和 ASCII armor，不保存或记录配置明文、密文，不提供解密接口。页面不传入也不显示任何密钥。无需公钥环境变量，传入自定义 recipient 会被拒绝。管理页面生产部署请使用 HTTPS，代理不要记录请求正文。
+
+通用 Agent 代码内置配套固定私钥，不内嵌 YAML。将页面生成的 `config.age` 与配套新版 Agent 放在同一目录；配置变更只需重新加密替换，单次运行下次启动生效，常驻服务重启生效。首次迁移须更新 Agent 和 Master 并重新加密旧配置。源码持有者和节点 root 可恢复配置，固定密钥不提供对此类人员的保密保证。
+
 Go 主控通过 `55555/udp` 接收 Anqu Agent 的巡检摘要、文件/进程告警及每次 SSH 登录，通过 `10110/tcp` 提供经过登录鉴权的管理 API。配套 Vue 前端 `anquan-server-web` 使用 `10111/tcp`。
 
 SQLite 数据文件为 `/data/anquan/anquan.db`。第一次启动自动创建目录、表和 `admin` 账号，默认密码 **`admin1818.`**（含末尾英文句点）。再次启动保留原密码、会话及全部数据。密码使用 bcrypt，浏览器使用 HttpOnly / SameSite=Strict Cookie，会话有效期 24 小时。

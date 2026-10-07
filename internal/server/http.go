@@ -43,6 +43,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("PUT /api/auth/password", s.password)
+	mux.HandleFunc("GET /api/settings/agent-encryption", s.agentEncryptionSettings)
+	mux.HandleFunc("POST /api/settings/agent-encryption", s.encryptAgentConfig)
 	mux.HandleFunc("GET /api/overview", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Store.Overview(r.Context())
 		s.respond(w, v, e)
