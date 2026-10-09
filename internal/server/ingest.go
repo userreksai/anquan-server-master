@@ -60,6 +60,7 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	interval := 0
 	heartbeatInterval := 0
 	var loginKey any
+	var commandKey any
 	switch e.Type {
 	case "heartbeat":
 		var heartbeat struct {
@@ -97,6 +98,22 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 		if json.Unmarshal(e.Data, &alert) != nil || strings.TrimSpace(alert.Kind) == "" || strings.TrimSpace(alert.Message) == "" {
 			return false, fmt.Errorf("invalid alert")
 		}
+	case "command_history":
+		var command struct {
+			ID          string    `json:"id"`
+			CommandTime time.Time `json:"command_time"`
+			User        string    `json:"user"`
+			Terminal    string    `json:"terminal"`
+			Command     string    `json:"command"`
+			Path        string    `json:"path"`
+			Offset      int64     `json:"offset"`
+		}
+		if json.Unmarshal(e.Data, &command) != nil || strings.TrimSpace(command.ID) == "" || len(command.ID) > 256 || command.CommandTime.IsZero() || command.CommandTime.Year() < 1970 || command.CommandTime.Year() > 9999 || strings.TrimSpace(command.User) == "" || len(command.User) > 256 || strings.TrimSpace(command.Terminal) == "" || len(command.Terminal) > 256 || strings.TrimSpace(command.Command) == "" || command.Path == "" || len(command.Path) > 4096 || command.Offset < 0 {
+			return false, fmt.Errorf("invalid command history record")
+		}
+		eventTime = command.CommandTime
+		hash := sha256.Sum256([]byte(command.ID))
+		commandKey = hex.EncodeToString(hash[:])
 	case "ssh_login":
 		var login struct {
 			ID        string    `json:"id"`
@@ -151,7 +168,7 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 		}
 		return true, tx.Commit()
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO events(event_id,machine_ip,host,type,time,received_at,data,login_key) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, e.EventID, ip, e.Host, e.Type, stamp(eventTime), now, string(e.Data), loginKey)
+	result, err := tx.ExecContext(ctx, `INSERT INTO events(event_id,machine_ip,host,type,time,received_at,data,login_key,command_key) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, e.EventID, ip, e.Host, e.Type, stamp(eventTime), now, string(e.Data), loginKey, commandKey)
 	if err != nil {
 		return false, err
 	}
@@ -168,7 +185,7 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 			return false, err
 		}
 	}
-	if e.Type == "alert" {
+	if e.Type == "alert" || e.Type == "ssh_login" {
 		id, e := result.LastInsertId()
 		if e != nil {
 			return false, e
@@ -204,6 +221,19 @@ func (s *Store) ServeUDP(ctx context.Context, conn *net.UDPConn, logger *slog.Lo
 			if rejected == 1 || rejected%100 == 0 {
 				logger.Warn("UDP event rejected", "rejected_total", rejected, "error", err)
 			}
+			continue
+		}
+		// ACK only after the transaction commits, including duplicate events.
+		// A lost ACK is safe: the agent retries the same durable event identity.
+		var envelope Envelope
+		if json.Unmarshal(buf[:n], &envelope) == nil && envelope.AckRequested {
+			ack, _ := json.Marshal(struct {
+				Version int    `json:"version"`
+				Type    string `json:"type"`
+				EventID string `json:"event_id"`
+			}{1, "ack", envelope.EventID})
+			_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+			_, _ = conn.WriteToUDP(ack, remote)
 		}
 	}
 }

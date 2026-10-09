@@ -6,13 +6,14 @@ import (
 )
 
 type Envelope struct {
-	Version int             `json:"version"`
-	EventID string          `json:"event_id"`
-	IP      string          `json:"ip,omitempty"`
-	Host    string          `json:"host"`
-	Time    time.Time       `json:"time"`
-	Type    string          `json:"type"`
-	Data    json.RawMessage `json:"data"`
+	Version      int             `json:"version"`
+	EventID      string          `json:"event_id"`
+	IP           string          `json:"ip,omitempty"`
+	Host         string          `json:"host"`
+	Time         time.Time       `json:"time"`
+	Type         string          `json:"type"`
+	Data         json.RawMessage `json:"data"`
+	AckRequested bool            `json:"ack_requested,omitempty"`
 }
 
 type Machine struct {

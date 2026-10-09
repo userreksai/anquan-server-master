@@ -59,7 +59,7 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion > 2 {
+	if schemaVersion > 3 {
 		return fmt.Errorf("unsupported database schema version %d", schemaVersion)
 	}
 	_, err = tx.Exec(`
@@ -104,6 +104,11 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox(delivered_at,next_attempt_at);
 		if _, err = tx.Exec(`ALTER TABLE machines ADD COLUMN heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE machines ADD COLUMN last_heartbeat_at INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version=2;`); err != nil {
+			return err
+		}
+	}
+	if schemaVersion < 3 {
+		if err := migrateCommandEvents(tx); err != nil {
 			return err
 		}
 	}

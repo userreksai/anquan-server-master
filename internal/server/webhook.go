@@ -41,6 +41,25 @@ func AlertText(event Event) string {
 	return text + "\n事件 ID：" + event.EventID
 }
 
+func NotificationText(event Event) string {
+	if event.Type != "ssh_login" {
+		return AlertText(event)
+	}
+	var login struct {
+		User     string `json:"user"`
+		SourceIP string `json:"source_ip"`
+		Terminal string `json:"terminal"`
+		Method   string `json:"method"`
+	}
+	_ = json.Unmarshal(event.Data, &login)
+	for _, value := range []*string{&login.User, &login.SourceIP, &login.Terminal, &login.Method} {
+		if strings.TrimSpace(*value) == "" {
+			*value = "N/A"
+		}
+	}
+	return fmt.Sprintf("【安全中心 SSH 登录通知】\n机器 IP：%s\n主机：%s\n类型：ssh_login\n登录用户：%s\n登录来源 IP：%s\n终端：%s\n登录方式：%s\n登录时间：%s\n事件 ID：%s", event.MachineIP, event.Host, login.User, login.SourceIP, login.Terminal, login.Method, event.Time.UTC().Format(time.RFC3339), event.EventID)
+}
+
 // WebhookResult exposes the actual outgoing text and safe delivery diagnostics.
 // A zero business code confirms acceptance by the provider, not human receipt.
 type WebhookResult struct {
@@ -77,7 +96,7 @@ func PostEvent(ctx context.Context, client *http.Client, hook Webhook, event Eve
 func SendEvent(ctx context.Context, client *http.Client, hook Webhook, event Event) (result WebhookResult, err error) {
 	started := time.Now()
 	hook.Format = webhookFormat(hook)
-	result = WebhookResult{Text: AlertText(event), Format: hook.Format}
+	result = WebhookResult{Text: NotificationText(event), Format: hook.Format}
 	defer func() {
 		result.DurationMS = time.Since(started).Milliseconds()
 		result.Success = err == nil
