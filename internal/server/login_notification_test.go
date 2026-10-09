@@ -31,7 +31,7 @@ func TestSSHLoginNotificationFormatsAndMissingFields(t *testing.T) {
 			if err != nil || !result.Success || key != "10.0.0.1:login-event" {
 				t.Fatalf("delivery failed: %+v %v", result, err)
 			}
-			for _, want := range []string{"【安全中心 SSH 登录通知】", "机器 IP：10.0.0.1", "主机：boce", "类型：ssh_login", "登录用户：root", "登录来源 IP：192.0.2.9", "终端：/dev/pts/1", "登录方式：publickey", "登录时间：2026-10-09T02:42:50Z", "事件 ID：login-event"} {
+			for _, want := range []string{"【安全中心 SSH 登录通知】", "机器 IP：10.0.0.1", "主机：boce", "类型：ssh_login", "登录用户：root", "登录来源 IP：192.0.2.9", "终端：/dev/pts/1", "登录方式：publickey", "登录时间（北京时间 UTC+8）：2026-10-09 10:42:50", "事件 ID：login-event"} {
 				if !strings.Contains(result.Text, want) {
 					t.Errorf("missing login evidence %q: %s", want, result.Text)
 				}

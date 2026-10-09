@@ -17,6 +17,9 @@ import (
 	"time"
 )
 
+// Beijing time uses UTC+8 independently of the master host's local timezone.
+var beijingTimeZone = time.FixedZone("UTC+8", 8*60*60)
+
 func WebhookClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
@@ -63,7 +66,7 @@ func NotificationText(event Event) string {
 			*value = "N/A"
 		}
 	}
-	return fmt.Sprintf("【安全中心 SSH 登录通知】\n机器 IP：%s\n主机：%s\n类型：ssh_login\n登录用户：%s\n登录来源 IP：%s\n终端：%s\n登录方式：%s\n登录时间：%s\n事件 ID：%s", event.MachineIP, event.Host, login.User, login.SourceIP, login.Terminal, login.Method, event.Time.UTC().Format(time.RFC3339), event.EventID)
+	return fmt.Sprintf("【安全中心 SSH 登录通知】\n机器 IP：%s\n主机：%s\n类型：ssh_login\n登录用户：%s\n登录来源 IP：%s\n终端：%s\n登录方式：%s\n登录时间（北京时间 UTC+8）：%s\n事件 ID：%s", event.MachineIP, event.Host, login.User, login.SourceIP, login.Terminal, login.Method, event.Time.In(beijingTimeZone).Format("2006-01-02 15:04:05"), event.EventID)
 }
 
 // WebhookResult exposes the actual outgoing text and safe delivery diagnostics.
