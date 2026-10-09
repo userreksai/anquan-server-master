@@ -158,6 +158,11 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	if err != nil {
 		return false, err
 	}
+	// Every valid received report proves contact, including retries and older
+	// agent timestamps. Rearm offline notification in the same transaction.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM machine_offline_state WHERE machine_ip=?`, ip); err != nil {
+		return false, err
+	}
 	if e.Type == "heartbeat" {
 		// Independent heartbeats update automatic registration/presence only;
 		// they never create history events or notification jobs. Keep their own

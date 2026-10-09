@@ -42,6 +42,12 @@ func AlertText(event Event) string {
 }
 
 func NotificationText(event Event) string {
+	if event.Type == "alert" {
+		var alert offlineAlert
+		if json.Unmarshal(event.Data, &alert) == nil && alert.Module == "machine" && alert.Kind == "abnormal_offline" {
+			return offlineNotificationText(event, alert)
+		}
+	}
 	if event.Type != "ssh_login" {
 		return AlertText(event)
 	}

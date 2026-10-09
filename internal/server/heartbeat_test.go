@@ -136,7 +136,7 @@ func TestVersionOneMigrationPreservesHistoryCredentialsAndOutbox(t *testing.T) {
 	defer reopened.Close()
 	var version int
 	var hash string
-	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
 		t.Fatalf("migration version=%d error=%v", version, err)
 	}
 	if err := reopened.DB.QueryRow(`SELECT password_hash FROM users WHERE username='admin'`).Scan(&hash); err != nil {

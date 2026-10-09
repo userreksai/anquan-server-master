@@ -59,7 +59,7 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion > 3 {
+	if schemaVersion > 4 {
 		return fmt.Errorf("unsupported database schema version %d", schemaVersion)
 	}
 	_, err = tx.Exec(`
@@ -109,6 +109,17 @@ PRAGMA user_version=2;`); err != nil {
 	}
 	if schemaVersion < 3 {
 		if err := migrateCommandEvents(tx); err != nil {
+			return err
+		}
+	}
+	if schemaVersion < 4 {
+		// Keep incident state separate from events: deleting an alert must not
+		// notify again while the same machine remains continuously offline.
+		if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS machine_offline_state (
+ machine_ip TEXT PRIMARY KEY REFERENCES machines(ip) ON DELETE CASCADE,
+ event_id TEXT NOT NULL
+);
+PRAGMA user_version=4;`); err != nil {
 			return err
 		}
 	}

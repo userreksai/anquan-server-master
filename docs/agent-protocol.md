@@ -59,7 +59,9 @@ Master 收到首条有效心跳或检测事件时，按机器 IP 自动创建记
 
 旧 Agent 仍可只发送 `scan_summary`：没有收到独立心跳的机器使用 `max(扫描周期 × 3, 120)` 秒作为离线阈值，默认扫描 300 秒对应 900 秒，避免正常巡检间隔被误判离线。收到新 Agent 的独立心跳后自动使用心跳阈值。
 
-数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=3`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位。数据库版本与 UDP 协议 `version: 1` 相互独立。
+Master 启动时及此后每秒检测离线状态，独立于 webhook 网络发送。每台机器每次持续离线创建一次 `alert`，模块 `machine`、类型 `abnormal_offline`，事务内保存离线状态和通知队列；Master 重启或删除告警不重复创建。任何有效 UDP 上报恢复在线并重置离线通知资格，下次离线会再通知。心跳本身仍不产生事件；离线告警由 Master 创建，不刷新 `last_seen`，无需更新 Agent。中文通知保留机器、主机名、最后上报时间、离线判定时间及超时阈值。
+
+数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=4`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 增加 `machine_offline_state` 保存持续离线状态。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位。数据库版本与 UDP 协议 `version: 1` 相互独立。
 
 ## 扫描摘要
 
