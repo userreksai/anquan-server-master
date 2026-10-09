@@ -27,11 +27,13 @@
 | POST | `/api/webhooks/{id}/test` | 测试已保存配置；空请求体或 `{message?}`；发送失败 502 |
 | POST | `/api/webhooks/test` | 测试当前表单 `{url,name?,format?,enabled?,message?}`，不保存；发送失败 502 |
 
-`type` 为 `alert`、`ssh_login`、`scan_summary`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。按事件发生时间倒序、整数 ID 倒序稳定分页；登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
+`type` 为 `alert`、`ssh_login`、`command_history`、`scan_summary`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。按事件发生时间倒序、整数 ID 倒序稳定分页；登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
 
 机器字段：`ip,host,source_ip,reported_ip,alias,notes,first_seen,last_seen,last_event_at,last_summary,interval_seconds,heartbeat_interval_seconds,event_count,alert_count,open_alert_count,login_count,online,status,offline_after_seconds`。`status` 为 `online` / `abnormal_offline`，`offline_after_seconds` 给出当前机器的离线阈值。机器由首次心跳/事件自动建立，后续上报自动恢复在线；心跳不增加事件数量。
 
-事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 原样保留 Agent 对象，不接受经 HTTP 修改检测证据。
+事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 保留 Agent 上报或主控检测的证据，不接受经 HTTP 修改检测证据。
+
+主控每秒检测机器离线，生成 `type: alert`、`data.module: machine`、`data.kind: abnormal_offline` 的事件。`data` 包含 `target`（机器 IP）、中文 `message`、可选 `alias`、`last_seen`、`offline_since`、`detected_at` 和 `offline_after_seconds`。外层 `time` 为离线阈值到达时间，`received_at` 为检测时间。每次持续离线仅生成一次，重启及删除事件不重置；有效上报恢复在线后，下次离线才创建新事件。所有启用地址各入队一次，失败持久重试；持续离线期间后来启用的地址会补充尚未存在的任务。
 
 Webhook 字段：`id,name,url,format,enabled,created_at,updated_at,last_error,last_success_at,pending_count`。`format` 可选 `feishu`（默认）、`wecom`、`generic`，`enabled` 默认 true；名称最多 128 字节，URL 仅允许 HTTP(S)，禁止 URL 中的用户名密码与片段。可配置多个独立通知地址。
 
