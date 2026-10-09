@@ -70,6 +70,6 @@ Lark/飞书即使 HTTP 200，业务码非零、缺失或无效仍返回 `success
 事件 ID：alert-example
 ```
 
-仅新产生的 `alert` 发往当时已启用的配置；历史告警、普通 SSH 登录、巡检摘要和心跳不发送。测试成功不创建配置，草稿测试后仍需保存才能接收后续自动告警。
+新入库的 `alert` 和 `ssh_login` 发往当时已启用的配置，事件与通知队列在同一事务提交。数据库已有记录不补发，重复上报不重复入队；延迟/补读登录首次入库时仍会通知，时间取真实 `login_time`。普通命令、巡检摘要和心跳不发送。测试成功不创建配置，草稿测试后仍需保存才能接收后续通知。
 
 总览字段：`machines,online_machines,events,alerts,open_alerts,ssh_logins,pending_notifications`。待通知数量包括已暂停地址的未发送记录。

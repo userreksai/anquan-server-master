@@ -49,7 +49,7 @@ func ParseFilter(values url.Values) (Filter, error) {
 		}
 		f.MachineIP = v
 	}
-	if f.Type != "" && f.Type != "alert" && f.Type != "ssh_login" && f.Type != "scan_summary" {
+	if f.Type != "" && f.Type != "alert" && f.Type != "ssh_login" && f.Type != "scan_summary" && f.Type != "command_history" {
 		return f, fmt.Errorf("事件类型无效")
 	}
 	if f.Status != "" && f.Status != "open" && f.Status != "resolved" {

@@ -121,7 +121,7 @@ func TestUDPIdentityDedupLegacyLoginAndOutOfOrderPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if countRows(t, reopened, "events") != 8 || countRows(t, reopened, "machines") != 3 || countRows(t, reopened, "outbox") != 2 {
+	if countRows(t, reopened, "events") != 8 || countRows(t, reopened, "machines") != 3 || countRows(t, reopened, "outbox") != 4 {
 		t.Fatal("reopening database lost durable events or outbox")
 	}
 	requireIngest(t, reopened, alert, "192.0.2.1", false)

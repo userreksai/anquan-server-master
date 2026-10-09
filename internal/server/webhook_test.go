@@ -121,6 +121,13 @@ func TestWebhookDoesNotFollowRedirectAndHonorsTimeout(t *testing.T) {
 }
 
 func TestWebhookRetrySurvivesReopenAndOneFailureDoesNotBlockOtherURLs(t *testing.T) {
+	for _, eventType := range []string{"alert", "ssh_login"} {
+		t.Run(eventType, func(t *testing.T) { testWebhookRetry(t, eventType) })
+	}
+}
+
+func testWebhookRetry(t *testing.T, eventType string) {
+	t.Helper()
 	store, dir := testStore(t)
 	s := testServer(store)
 	ctx := context.Background()
@@ -139,7 +146,11 @@ func TestWebhookRetrySurvivesReopenAndOneFailureDoesNotBlockOtherURLs(t *testing
 	badID := insertHook(t, store, "flaky", endpoint.URL+"/flaky", "feishu", true)
 	goodID := insertHook(t, store, "good", endpoint.URL+"/good", "feishu", true)
 	insertHook(t, store, "disabled", endpoint.URL+"/disabled", "feishu", false)
-	packet := testPacket(t, "event-1", "alert", "10.0.0.1", time.Now(), testAlert())
+	data := testAlert()
+	if eventType == "ssh_login" {
+		data = map[string]any{"id": "login-1", "user": "root", "source_ip": "192.0.2.9", "terminal": "/dev/pts/1", "method": "publickey", "login_time": time.Now()}
+	}
+	packet := testPacket(t, "event-1", eventType, "10.0.0.1", time.Now(), data)
 	requireIngest(t, store, packet, "127.0.0.1", true)
 	jobs, err := s.due(ctx)
 	if err != nil || len(jobs) != 2 {
