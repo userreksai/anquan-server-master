@@ -4,7 +4,9 @@
 
 新增已登录管理员接口 `GET/POST /api/settings/agent-encryption`，沿用会话鉴权和同源校验。POST 请求只包含 `{"yaml":"配置原文"}`；响应包含 `ciphertext` 和 `filename: config.age`，GET 仅返回文件名。支持最大 4 MiB 单份 YAML 映射，检查语法与重复字段；Agent 启动时继续校验完整配置字段。
 
-接口使用代码内置的 age X25519 公钥和 ASCII armor，不保存或记录配置明文、密文，不提供解密接口。页面不传入也不显示任何密钥。无需公钥环境变量，传入自定义 recipient 会被拒绝。管理页面生产部署请使用 HTTPS，代理不要记录请求正文。
+加密接口使用代码内置的 age X25519 公钥和 ASCII armor，不保存或记录本次加密的配置明文、密文，不提供解密接口。页面不传入也不显示任何密钥。无需公钥环境变量，传入自定义 recipient 会被拒绝。管理页面生产部署请使用 HTTPS，代理不要记录请求正文。
+
+模板通过独立的 `GET/PUT /api/settings/agent-config-template` 接口保存，沿用登录鉴权、同源校验和 `Cache-Control: no-store`。PUT 请求为 `{"yaml":"配置原文"}`，校验最大 4 MiB 的单份 YAML 映射后，原样覆盖 SQLite 中唯一一份共享模板；返回 `{"yaml":"已保存原文"}`。GET 读取最近保存的内容，尚未保存时返回 `{"yaml":null}`，由前端提供内置示例。注释、缩进和换行会保留，跨浏览器、跨设备和重启均可恢复。只有显式存储模板会持久化 YAML 明文，加密不会更改模板。数据库启动时自动升级到 schema v5，新增模板表并保留原有数据；需配套更新前端。
 
 通用 Agent 代码内置配套固定私钥，不内嵌 YAML。将页面生成的 `config.age` 与配套新版 Agent 放在同一目录；配置变更只需重新加密替换，单次运行下次启动生效，常驻服务重启生效。首次迁移须更新 Agent 和 Master 并重新加密旧配置。源码持有者和节点 root 可恢复配置，固定密钥不提供对此类人员的保密保证。
 
@@ -137,7 +139,7 @@ agent_ip: 172.22.0.101
 
 操作命令使用 `command_history` 事件，保留发生时间、用户、终端、完整命令、来源日志和字节位置；`/api/events?type=command_history` 支持现有筛选、分页和关键字搜索。正常命令不触发 webhook。发生时间取 `data.command_time`，接收时间另存。相同文本在同一秒执行多次仍分别保留，重传按机器与来源记录 ID 去重。
 
-启动自动迁移 SQLite 到 schema v4，增加持久离线状态，保留已有事件、备注、通知配置、队列和重试信息。离线通知只需更新 Master，Web 更新用于中文标签及说明，Agent 无需修改。启用 Agent v0.6.0 的 `history` 时仍应先更新 Master/Web。旧二进制不支持 schema v4，回退需要使用升级前的数据库备份。
+启动自动迁移 SQLite 到 schema v5，保留 v4 的持久离线状态并新增共享 YAML 模板，保留已有事件、备注、通知配置、队列和重试信息。离线通知只需更新 Master，Web 更新用于中文标签及说明，Agent 无需修改。模板存储需同时更新 Master/Web。启用 Agent v0.6.0 的 `history` 时仍应先更新 Master/Web。旧二进制不支持 schema v5，回退需要使用升级前的数据库备份。
 
 按内网场景部署，打通 Agent 到主控的 `55555/UDP` 及返回流量，不需要 UDP 认证、加密或手工注册。巡检、登录、摘要和心跳为尽力投递。命令采集请求 ACK，主控成功落库后回复，重复报文也确认；Agent 持久保留未确认批次并重试。完整格式见 [Agent 协议](docs/agent-protocol.md)。
 
