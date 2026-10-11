@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,5 +96,24 @@ func TestCLIRejectsUnexpectedArgumentsAndInvalidEnvironment(t *testing.T) {
 	t.Setenv("ANQUAN_SECURE_COOKIE", "not-a-bool")
 	if err := run([]string{}); err == nil {
 		t.Fatal("invalid boolean environment accepted")
+	}
+}
+
+func TestTCPListenFailureAbortsMasterStartup(t *testing.T) {
+	t.Setenv("ANQUAN_SECURE_COOKIE", "false")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	// The env value is also covered here; --tcp explicitly overrides it below.
+	t.Setenv("ANQUAN_TCP_ADDR", listener.Addr().String())
+	for _, args := range [][]string{
+		{"--data-dir", t.TempDir(), "--http", "127.0.0.1:0", "--udp", "127.0.0.1:0"},
+		{"--data-dir", t.TempDir(), "--http", "127.0.0.1:0", "--udp", "127.0.0.1:0", "--tcp", listener.Addr().String()},
+	} {
+		if err := run(args); err == nil || !strings.Contains(err.Error(), "listen agent configuration TCP") {
+			t.Fatalf("occupied config port did not abort startup: %v", err)
+		}
 	}
 }

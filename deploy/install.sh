@@ -33,6 +33,6 @@ install -m 0644 "$script_dir/anquan-master.service" /etc/systemd/system/anquan-m
 systemctl daemon-reload
 systemctl enable anquan-master
 systemctl restart anquan-master
-echo '主控已安装：HTTP 10110 / UDP 55555，数据库目录 /data/anquan。'
+echo '主控已安装：HTTP TCP 10110 / 上报 UDP 55555 / 配置 TCP 55556，数据库目录 /data/anquan。'
 echo '查看状态：systemctl status anquan-master'
 echo '重置密码：sudo anquan-reset-password'

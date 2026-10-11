@@ -59,7 +59,7 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion > 5 {
+	if schemaVersion > 6 {
 		return fmt.Errorf("unsupported database schema version %d", schemaVersion)
 	}
 	_, err = tx.Exec(`
@@ -128,6 +128,17 @@ PRAGMA user_version=4;`); err != nil {
  id INTEGER PRIMARY KEY CHECK(id=1), yaml TEXT NOT NULL
 );
 PRAGMA user_version=5;`); err != nil {
+			return err
+		}
+	}
+	if schemaVersion < 6 {
+		if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS agent_config_deliveries (
+ machine_ip TEXT PRIMARY KEY REFERENCES machines(ip) ON DELETE CASCADE,
+ ciphertext TEXT NOT NULL, revision TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','applied','failed')),
+ error TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL, applied_at INTEGER
+);
+PRAGMA user_version=6;`); err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,6 @@
 # Agent / Master UDP 协议
 
-Agent 向主控 `55555/udp` 发送 UTF-8 JSON，每个数据报是一条完整事件，单条不超过 60000 字节。主控 HTTP API 与前端分别使用 `10110/tcp`、`10111/tcp`；Agent 只访问 UDP 端口。当前扩展保留 `version: 1` 和原有字段。
+Agent 向主控 `55555/udp` 发送 UTF-8 JSON，每个数据报是一条完整事件，单条不超过 60000 字节。Agent 还主动连接主控 `55556/tcp` 接收配置。主控 HTTP API 与前端分别使用 `10110/tcp`、`10111/tcp`。当前扩展保留 `version: 1` 和原有字段。
 
 ## 机器身份与配置
 
@@ -61,7 +61,38 @@ Master 收到首条有效心跳或检测事件时，按机器 IP 自动创建记
 
 Master 启动时及此后每秒检测离线状态，独立于 webhook 网络发送。每台机器每次持续离线创建一次 `alert`，模块 `machine`、类型 `abnormal_offline`，事务内保存离线状态和通知队列；Master 重启或删除告警不重复创建。任何有效 UDP 上报恢复在线并重置离线通知资格，下次离线会再通知。心跳本身仍不产生事件；离线告警由 Master 创建，不刷新 `last_seen`，无需更新 Agent。中文通知保留机器、主机名、最后上报时间、离线判定时间及超时阈值。
 
-数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=5`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 增加 `machine_offline_state` 保存持续离线状态；v5 增加 `agent_config_template` 保存管理员显式存储的共享 YAML 模板。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位。数据库版本与 UDP 协议 `version: 1` 相互独立。
+数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=6`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 保存持续离线状态；v5 增加共享 YAML 模板；v6 增加按机器分配的加密配置、版本和应用确认状态。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位。数据库版本与协议 `version: 1` 相互独立。
+
+## TCP 配置下发（55556）
+
+Master 监听 `55556/tcp`，Agent 使用本地 `config.age` 的 `server` 主机地址主动连接同一 IP 的 55556 端口，无需在节点监听端口。TCP 配置通道独立于既有 UDP 事件通道；`server: []` 关闭两者。本地 `agent_ip` 优先作为机器主键，省略时使用访问该 Master 的 UDP 出口 IP，与事件身份一致。多个 Master 按本地列表顺序选择可达配置主控。
+
+每帧是 UTF-8 JSON 加换行（NDJSON），最大 8 MiB，`version: 1`。JSON 字符串内的 age 密文换行使用 JSON 转义。第一帧：
+
+```json
+{"version":1,"type":"hello","ip":"192.0.2.10","host":"node-a","agent_version":"0.6.0"}
+```
+
+主控按机器登记并发送最新分配；没有分配时，`revision` 和 `ciphertext` 同时为空：
+
+```json
+{"version":1,"type":"config","revision":"<密文完整字节的SHA-256十六进制>","ciphertext":"-----BEGIN AGE ENCRYPTED FILE-----\n..."}
+```
+
+Agent 先验证 revision、age 完整性和节点平台的 YAML 配置，再原子保存程序旁的 `config.master.age`。常驻模式等待当前扫描结束，停止旧心跳/命令采集工作、切换到新配置并重启相应工作后才确认成功：
+
+```json
+{"version":1,"type":"ack","revision":"<当前版本>"}
+```
+
+失败返回同版本和非空 `error`，保留当前有效配置及缓存；Master 记录失败供页面显示。未知或旧版本 ACK 不改变新分配状态。主控保存每台机器最近分配的密文、版本、下发和确认状态，重启或连接恢复时自动重发。下发 HTTP 成功只表示保存成功，节点生效以 ACK 为准。
+
+Agent 每 30 秒发送 `{"version":1,"type":"ping"}`，主控回复 `{"version":1,"type":"pong"}`。有效 hello 和 ping 更新机器活动时间；连接异常后 Agent 自动重连。页面 `connected` 单独表示配置 TCP 连接，机器 `online` 仍按最近活动时间及既有超时阈值计算。
+
+主控配置优先于本地 `config.age`，启动先使用有效缓存，再限时向主控同步。主控暂时不可达时沿用有效主控缓存，没有缓存则运行本地配置；主控明确发送空分配时删除缓存并使用本地配置。无参数单次模式只在启动时同步，实时推送需要 `-service`。本地配置必须保留作为连接引导，下发 YAML 的 `server` 和 `agent_ip` 不覆盖本地值。服务账号需要对程序目录的缓存写入权限。
+
+此通道沿用内网机器 IP 信任方式，没有单独的节点认证或 TLS；age 密文用于配置加密，不构成 Master 身份认证。仅允许可信 Agent 网络访问 55556/TCP。既有 UDP、HTTP 与 Webhook 的传输行为保持原有协议。
+
 
 ## 扫描摘要
 

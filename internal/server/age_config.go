@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -36,28 +37,32 @@ func readAgentYAML(w http.ResponseWriter, r *http.Request) (string, bool) {
 		fail(w, 400, "请求只能包含一个 JSON 对象")
 		return "", false
 	}
-	if len(body.YAML) > maxAgentYAMLBytes || strings.TrimSpace(body.YAML) == "" {
-		fail(w, 400, "请填写 YAML 配置，最大 4 MiB")
-		return "", false
-	}
-	// Validate a single mapping without resolving file paths on the master.
-	// Agent performs its complete schema and target-platform validation on load.
-	decoder := yaml.NewDecoder(strings.NewReader(body.YAML))
-	var document yaml.Node
-	if err := decoder.Decode(&document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		fail(w, 400, "YAML 格式错误：配置必须为一个键值映射")
-		return "", false
-	}
-	var mapping map[string]any
-	if err := document.Decode(&mapping); err != nil {
-		fail(w, 400, "YAML 无效，请检查重复字段和数据类型")
-		return "", false
-	}
-	if err := decoder.Decode(new(yaml.Node)); err != io.EOF {
-		fail(w, 400, "只允许一份 YAML 配置，不支持多个文档")
+	if err := validateAgentYAML(body.YAML); err != nil {
+		fail(w, 400, err.Error())
 		return "", false
 	}
 	return body.YAML, true
+}
+
+func validateAgentYAML(config string) error {
+	if len(config) > maxAgentYAMLBytes || strings.TrimSpace(config) == "" {
+		return errors.New("请填写 YAML 配置，最大 4 MiB")
+	}
+	// Validate a single mapping without resolving file paths on the master.
+	// Agent performs its complete schema and target-platform validation on load.
+	decoder := yaml.NewDecoder(strings.NewReader(config))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return errors.New("YAML 格式错误：配置必须为一个键值映射")
+	}
+	var mapping map[string]any
+	if err := document.Decode(&mapping); err != nil {
+		return errors.New("YAML 无效，请检查重复字段和数据类型")
+	}
+	if err := decoder.Decode(new(yaml.Node)); err != io.EOF {
+		return errors.New("只允许一份 YAML 配置，不支持多个文档")
+	}
+	return nil
 }
 
 func (s *Server) encryptAgentConfig(w http.ResponseWriter, r *http.Request) {
@@ -65,10 +70,21 @@ func (s *Server) encryptAgentConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	ciphertext, err := encryptedAgentYAML(config)
+	if err != nil {
+		fail(w, 500, "配置加密失败，请重试")
+		return
+	}
+	// This download endpoint does not persist or log configuration content.
+	writeJSON(w, 200, map[string]string{
+		"ciphertext": ciphertext, "filename": "config.age",
+	})
+}
+
+func encryptedAgentYAML(config string) (string, error) {
 	recipient, err := age.ParseX25519Recipient(agentAgeRecipient)
 	if err != nil {
-		fail(w, 500, "加密服务配置异常")
-		return
+		return "", err
 	}
 	var encrypted bytes.Buffer
 	armored := armor.NewWriter(&encrypted)
@@ -83,11 +99,7 @@ func (s *Server) encryptAgentConfig(w http.ResponseWriter, r *http.Request) {
 		err = armored.Close()
 	}
 	if err != nil {
-		fail(w, 500, "配置加密失败，请重试")
-		return
+		return "", err
 	}
-	// Neither request plaintext nor ciphertext is persisted or logged.
-	writeJSON(w, 200, map[string]string{
-		"ciphertext": encrypted.String(), "filename": "config.age",
-	})
+	return encrypted.String(), nil
 }

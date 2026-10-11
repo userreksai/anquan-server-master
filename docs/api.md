@@ -75,3 +75,17 @@ Lark/飞书即使 HTTP 200，业务码非零、缺失或无效仍返回 `success
 新入库的 `alert` 和 `ssh_login` 发往当时已启用的配置，事件与通知队列在同一事务提交。数据库已有记录不补发，重复上报不重复入队；延迟/补读登录首次入库时仍会通知，时间取真实 `login_time`。普通命令、巡检摘要和心跳不发送。测试成功不创建配置，草稿测试后仍需保存才能接收后续通知。
 
 总览字段：`machines,online_machines,events,alerts,open_alerts,ssh_logins,pending_notifications`。待通知数量包括已暂停地址的未发送记录。
+
+## 按机器下发 Agent 配置
+
+`GET /api/settings/agent-config-deliveries` 返回 `{items:[...]}`，包含全部已登记机器。每项字段为 `machine_ip,host,alias,connected,revision,status,error,updated_at,applied_at`。`connected` 表示 TCP 配置连接，独立于 UDP 心跳在线状态；`status` 为 `unassigned`（未分配）、`pending`（等待连接或确认）、`applied`（Agent 已应用并确认）、`failed`（Agent 拒绝并返回错误）。GET 不返回配置正文。
+
+`POST /api/settings/agent-config-deliveries` 请求：
+
+```json
+{"yaml":"output_dir: /usr/local/anqu\nlogin: {enabled: false}\n", "machine_ips":["192.0.2.10","192.0.2.11"]}
+```
+
+沿用管理员登录、JSON、同源校验。YAML 最大 4 MiB，必须是单份键值映射；机器列表必须非空且已登记。主控加密后在一个事务中覆盖所选机器的最新分配，返回 `{items:[所选机器的状态]}`。HTTP 200 表示主控已保存；是否在节点生效须查看后续 `applied` 确认。离线或旧版 Agent 保持待下发，新版 Agent 连接后自动投递。旧版本 ACK 不会覆盖更新版本状态。共享模板的存储与下发各自独立。
+
+Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v6，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
