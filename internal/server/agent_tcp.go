@@ -24,6 +24,7 @@ type agentConfigFrame struct {
 	IP           string `json:"ip,omitempty"`
 	Host         string `json:"host,omitempty"`
 	AgentVersion string `json:"agent_version,omitempty"`
+	DiscoverIP   bool   `json:"discover_ip,omitempty"`
 	Revision     string `json:"revision,omitempty"`
 	Ciphertext   string `json:"ciphertext,omitempty"`
 	Error        string `json:"error,omitempty"`
@@ -141,7 +142,7 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 		return
 	}
 	ip := hello.IP
-	if ip == "" {
+	if hello.DiscoverIP || ip == "" {
 		ip = source
 	}
 	agent.ip, err = normalizeIP(ip)
@@ -157,6 +158,13 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 	s.configMu.Unlock()
 	if previous != nil {
 		_ = previous.conn.Close()
+	}
+	// New agents request discovery and use this observed peer IP for every UDP
+	// destination. Legacy agents retain their original hello/response protocol.
+	if hello.DiscoverIP {
+		if err := writeAgentFrame(agent.conn, agentConfigFrame{Version: 1, Type: "identity", IP: agent.ip}); err != nil {
+			return
+		}
 	}
 	writerDone := make(chan struct{})
 	go func() {
