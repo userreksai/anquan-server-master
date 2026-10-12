@@ -44,4 +44,4 @@ until curl -fsS --max-time 3 http://127.0.0.1:10110/healthz >/dev/null; do
   fi
   sleep 1
 done
-echo '后端部署成功：TCP 10110 / UDP 55555；数据库 /data/anquan/anquan.db'
+echo '后端部署成功：HTTP TCP 10110 / 上报 UDP 55555 / 配置 TCP 55556；数据库 /data/anquan/anquan.db'

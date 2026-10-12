@@ -22,10 +22,13 @@ type Server struct {
 	Client        *http.Client
 	loginMu       sync.Mutex
 	loginAttempts map[string]attempt
+	configMu      sync.Mutex
+	configAgents  map[string]*agentConfigConnection
+	configAll     map[*agentConfigConnection]struct{}
 }
 
 func New(s *Store, secureCookie bool, logger *slog.Logger) *Server {
-	return &Server{Store: s, SecureCookie: secureCookie, Logger: logger, Client: WebhookClient(), loginAttempts: map[string]attempt{}}
+	return &Server{Store: s, SecureCookie: secureCookie, Logger: logger, Client: WebhookClient(), loginAttempts: map[string]attempt{}, configAgents: map[string]*agentConfigConnection{}, configAll: map[*agentConfigConnection]struct{}{}}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -47,6 +50,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/agent-encryption", s.encryptAgentConfig)
 	mux.HandleFunc("GET /api/settings/agent-config-template", s.getAgentConfigTemplate)
 	mux.HandleFunc("PUT /api/settings/agent-config-template", s.saveAgentConfigTemplate)
+	mux.HandleFunc("GET /api/settings/agent-config-deliveries", s.getAgentConfigDeliveries)
+	mux.HandleFunc("POST /api/settings/agent-config-deliveries", s.saveAgentConfigDeliveries)
 	mux.HandleFunc("GET /api/overview", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Store.Overview(r.Context())
 		s.respond(w, v, e)
@@ -257,6 +262,7 @@ func (s *Server) deleteMachine(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.Store.DB.ExecContext(r.Context(), `DELETE FROM machines WHERE ip=?`, ip)
 	if s.changed(w, res, err) {
+		s.disconnectConfigAgent(ip)
 		writeJSON(w, 200, map[string]string{"message": "机器及其记录已删除"})
 	}
 }

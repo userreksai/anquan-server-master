@@ -44,6 +44,7 @@ func run(args []string) error {
 	dataDir := flags.String("data-dir", env("ANQUAN_DATA_DIR", "/data/anquan"), "SQLite data directory")
 	httpAddr := flags.String("http", env("ANQUAN_HTTP_ADDR", env("HTTP_ADDR", ":10110")), "HTTP listen address")
 	udpAddr := flags.String("udp", env("ANQUAN_UDP_ADDR", env("UDP_ADDR", ":55555")), "UDP listen address")
+	tcpAddr := flags.String("tcp", env("ANQUAN_TCP_ADDR", ":55556"), "agent configuration TCP listen address")
 	secureDefault, err := strconv.ParseBool(env("ANQUAN_SECURE_COOKIE", "false"))
 	if err != nil {
 		return fmt.Errorf("ANQUAN_SECURE_COOKIE: %w", err)
@@ -77,18 +78,25 @@ func run(args []string) error {
 		return err
 	}
 	defer listener.Close()
+	tcpListener, err := net.Listen("tcp", *tcpAddr)
+	if err != nil {
+		return fmt.Errorf("listen agent configuration TCP: %w", err)
+	}
+	defer tcpListener.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	srv := server.New(store, *secureCookie, slog.Default())
 	httpServer := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
-	errorsCh := make(chan error, 2)
+	errorsCh := make(chan error, 3)
+	tcpDone := make(chan struct{})
+	go func() { defer close(tcpDone); errorsCh <- srv.ServeAgentTCP(ctx, tcpListener) }()
 	go func() { errorsCh <- store.ServeUDP(ctx, udpConn, slog.Default()) }()
 	go func() { errorsCh <- httpServer.Serve(listener) }()
 	notifyDone := make(chan struct{})
 	go func() { defer close(notifyDone); srv.RunNotifier(ctx) }()
 	offlineDone := make(chan struct{})
 	go func() { defer close(offlineDone); srv.RunOfflineMonitor(ctx) }()
-	slog.Info("安全中心主控已启动", "http", listener.Addr().String(), "udp", udpConn.LocalAddr().String(), "database", filepath.Join(*dataDir, "anquan.db"))
+	slog.Info("安全中心主控已启动", "http", listener.Addr().String(), "udp", udpConn.LocalAddr().String(), "tcp", tcpListener.Addr().String(), "database", filepath.Join(*dataDir, "anquan.db"))
 	select {
 	case <-ctx.Done():
 	case err = <-errorsCh:
@@ -105,6 +113,7 @@ func run(args []string) error {
 	}
 	<-notifyDone
 	<-offlineDone
+	<-tcpDone
 	return err
 }
 
