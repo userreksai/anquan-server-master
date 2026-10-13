@@ -153,6 +153,43 @@ func TestAgentTemplateInvalidSavePreservesPreviousTemplate(t *testing.T) {
 	}
 }
 
+func TestAgentTemplatePOSTAndPUTUseSameAuthenticatedSave(t *testing.T) {
+	store, _ := testStore(t)
+	s := testServer(store)
+	const path = "/api/settings/agent-config-template"
+	const original = "# 先前模板\nserver: []\n"
+	if err := store.SaveAgentConfigTemplate(t.Context(), original); err != nil {
+		t.Fatal(err)
+	}
+	cookie := testLogin(t, s, DefaultPassword)
+	for _, method := range []string{"POST", "PUT"} {
+		t.Run(method, func(t *testing.T) {
+			changed := "# " + method + " 保存\nserver: []\n"
+			body := map[string]string{"yaml": changed}
+			requireStatus(t, testRequest(t, s, method, path, body, nil, nil), 401)
+			for _, headers := range []map[string]string{{"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}} {
+				requireStatus(t, testRequest(t, s, method, path, body, cookie, headers), 403)
+			}
+			requireStatus(t, testRequest(t, s, method, path, body, cookie, map[string]string{"Content-Type": "text/plain"}), 415)
+			requireStatus(t, testRequest(t, s, method, path, map[string]string{"yaml": "[broken"}, cookie, nil), 400)
+			var prior string
+			if err := store.DB.QueryRow(`SELECT yaml FROM agent_config_template WHERE id=1`).Scan(&prior); err != nil || prior != original {
+				t.Fatalf("rejected %s overwrote shared template: %v", method, err)
+			}
+			w := testRequest(t, s, method, path, body, cookie, map[string]string{"Origin": "http://security.test"})
+			requireStatus(t, w, 200)
+			saved := jsonResult[agentConfigTemplate](t, w)
+			loaded := jsonResult[agentConfigTemplate](t, testRequest(t, s, "GET", path, nil, cookie, nil))
+			if saved.YAML == nil || loaded.YAML == nil || *saved.YAML != changed || *loaded.YAML != changed || countRows(t, store, "agent_config_template") != 1 {
+				t.Fatalf("%s did not save/read the shared template", method)
+			}
+			if err := store.SaveAgentConfigTemplate(t.Context(), original); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestV4MigrationAddsAgentTemplateWithoutLosingData(t *testing.T) {
 	store, dir := testStore(t)
 	s := testServer(store)

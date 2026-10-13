@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings/agent-encryption", s.agentEncryptionSettings)
 	mux.HandleFunc("POST /api/settings/agent-encryption", s.encryptAgentConfig)
 	mux.HandleFunc("GET /api/settings/agent-config-template", s.getAgentConfigTemplate)
+	mux.HandleFunc("POST /api/settings/agent-config-template", s.saveAgentConfigTemplate)
 	mux.HandleFunc("PUT /api/settings/agent-config-template", s.saveAgentConfigTemplate)
 	mux.HandleFunc("GET /api/settings/agent-config-deliveries", s.getAgentConfigDeliveries)
 	mux.HandleFunc("POST /api/settings/agent-config-deliveries", s.saveAgentConfigDeliveries)
