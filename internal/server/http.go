@@ -20,6 +20,7 @@ type Server struct {
 	SecureCookie  bool
 	Logger        *slog.Logger
 	Client        *http.Client
+	publicOrigin  *url.URL
 	loginMu       sync.Mutex
 	loginAttempts map[string]attempt
 	configMu      sync.Mutex
@@ -80,8 +81,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
 			if origin := r.Header.Get("Origin"); origin != "" {
-				u, err := url.Parse(origin)
-				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !strings.EqualFold(u.Host, r.Host) || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+				if !s.trustedOrigin(origin, r.Host) {
 					fail(w, 403, "请求来源不受信任")
 					return
 				}

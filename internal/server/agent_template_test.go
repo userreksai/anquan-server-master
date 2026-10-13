@@ -1,11 +1,82 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestAgentTemplateLocalProxyOriginSavesOnlyLocalDatabase(t *testing.T) {
+	store, dir := testStore(t)
+	s := testServer(store)
+	if err := s.SetPublicOrigin("https://prodsafety.ops.tw"); err != nil {
+		t.Fatal(err)
+	}
+	// Template storage must never use the webhook/external HTTP client.
+	s.Client = &http.Client{Transport: webhookRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("saving a template made an external request: %s", r.URL)
+		return nil, nil
+	})}
+	cookie := testLogin(t, s, DefaultPassword)
+	const path = "/api/settings/agent-config-template"
+	const config = "# 本机主控保存模板，不连接 Agent\nserver: []\n"
+	request := func(content string, headers map[string]string, loggedIn bool) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{"yaml": content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Nginx may replace Host with the local upstream while keeping Origin.
+		r := httptest.NewRequest("PUT", "http://127.0.0.1:10110"+path, strings.NewReader(string(body)))
+		r.Header.Set("Content-Type", "application/json")
+		for key, value := range headers {
+			r.Header.Set(key, value)
+		}
+		if loggedIn {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	publicHeaders := map[string]string{"Origin": "https://prodsafety.ops.tw", "Sec-Fetch-Site": "same-origin"}
+	requireStatus(t, request(config, publicHeaders, false), 401)
+	if countRows(t, store, "agent_config_template") != 0 {
+		t.Fatal("unauthenticated request saved a template")
+	}
+	requireStatus(t, request(config, publicHeaders, true), 200)
+	const rejectedConfig = "# 未授权内容不得覆盖已保存模板\nserver: []\n"
+	for _, headers := range []map[string]string{
+		{"Origin": "https://evil.example"},
+		{"Origin": "http://prodsafety.ops.tw"},
+		{"Origin": "https://prodsafety.ops.tw:8443"},
+		{"Origin": "http://127.0.0.1:10110"},
+		{"Origin": "null"},
+		{"Origin": "https://prodsafety.ops.tw/"},
+		{"Origin": "https://prodsafety.ops.tw?"},
+		{"Origin": "https://prodsafety.ops.tw#"},
+		{"Origin": "https://prodsafety.ops.tw", "Sec-Fetch-Site": "cross-site"},
+		{"Origin": "https://evil.example", "X-Forwarded-Host": "prodsafety.ops.tw", "X-Forwarded-Proto": "https", "Forwarded": "host=prodsafety.ops.tw;proto=https"},
+	} {
+		requireStatus(t, request(rejectedConfig, headers, true), 403)
+	}
+	requireStatus(t, request(rejectedConfig, map[string]string{"Origin": "https://prodsafety.ops.tw", "Content-Type": "text/plain"}, true), 415)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	loaded := jsonResult[agentConfigTemplate](t, testRequest(t, testServer(reopened), "GET", path, nil, cookie, nil))
+	if loaded.YAML == nil || *loaded.YAML != config || countRows(t, reopened, "agent_config_template") != 1 {
+		t.Fatal("proxy save was not durably stored in the master's local SQLite database")
+	}
+}
 
 func TestAgentTemplatePersistsAcrossSessionsAndRestart(t *testing.T) {
 	store, dir := testStore(t)
