@@ -50,6 +50,7 @@ func run(args []string) error {
 		return fmt.Errorf("ANQUAN_SECURE_COOKIE: %w", err)
 	}
 	secureCookie := flags.Bool("secure-cookie", secureDefault, "require HTTPS for session cookies")
+	publicOrigin := flags.String("public-origin", env("ANQUAN_PUBLIC_ORIGIN", ""), "browser-facing HTTP(S) origin for write-request validation")
 	if err = flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -59,11 +60,17 @@ func run(args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional argument")
 	}
+	// Validate deployment settings before creating the database or listeners.
+	srv := server.New(nil, *secureCookie, slog.Default())
+	if err = srv.SetPublicOrigin(*publicOrigin); err != nil {
+		return fmt.Errorf("--public-origin/ANQUAN_PUBLIC_ORIGIN: %w", err)
+	}
 	store, err := server.Open(*dataDir)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+	srv.Store = store
 	udp, err := net.ResolveUDPAddr("udp", *udpAddr)
 	if err != nil {
 		return err
@@ -85,7 +92,6 @@ func run(args []string) error {
 	defer tcpListener.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	srv := server.New(store, *secureCookie, slog.Default())
 	httpServer := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	errorsCh := make(chan error, 3)
 	tcpDone := make(chan struct{})

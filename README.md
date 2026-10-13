@@ -69,6 +69,7 @@ CGO_ENABLED=0 go build -trimpath -o dist/anquan-master ./cmd/anquan-master
 | `--udp` | `ANQUAN_UDP_ADDR` | `:55555` |
 | `--tcp` | `ANQUAN_TCP_ADDR` | `:55556` |
 | `--secure-cookie` | `ANQUAN_SECURE_COOKIE` | `false`；HTTPS 部署可设为 `true` |
+| `--public-origin` | `ANQUAN_PUBLIC_ORIGIN` | 空；带 Origin 的写请求沿用 HTTP Host 校验 |
 
 也支持显式 `serve` 子命令。`GET /healthz` 检查服务和数据库。程序收到 SIGTERM / Ctrl+C 后停止接收、关闭后台通知和 HTTP 服务。
 
@@ -99,6 +100,44 @@ journalctl -u anquan-master -f
 ```
 
 安装脚本创建系统账号、目录、服务和 `/usr/local/bin/anquan-reset-password`。可在 `/etc/anquan-master.env` 设置监听地址等环境变量。数据目录固定可写为 `/data/anquan`；如改变数据路径，也需调整 unit 中的 `WorkingDirectory` 和 `ReadWritePaths`。
+
+## 本机 Nginx 与模板保存 403 修复
+
+主控与 Nginx 在同一台服务器时，浏览器仍使用网站同源 `/api/`；Nginx 将请求发送到本机 `127.0.0.1:10110`，主控直接更新自己的 SQLite。模板保存不调用 `sa.sa.ops.tw`，不连接 Agent，也不经过 Agent TCP/UDP 中转。浏览器 URL 显示 `https://prodsafety.ops.tw/api/...` 是管理入口地址，不能将前端地址改为浏览器的 `localhost`。
+
+设置 `ANQUAN_PUBLIC_ORIGIN=https://prodsafety.ops.tw` 后，主控对带 Origin 的写请求严格校验该公开来源的协议、主机名和端口，即使代理将 HTTP Host 改为本机上游也可正常保存。只允许一个完整的 HTTP(S) Origin，不带末尾 `/`、路径、查询、片段、用户名或通配符。请使用浏览器实际发送的 Origin，HTTPS 默认端口应省略 `:443`，HTTP 默认端口应省略 `:80`；非默认端口必须填写。配置为空时保持原有 Host 校验。无效配置在打开数据库和监听端口前直接报错。
+
+跨站请求拒绝、登录鉴权、JSON 内容类型校验和 Cookie 保护继续生效；主控不会信任 `X-Forwarded-Host` 或 `Forwarded` 来放宽来源。模板依旧保存在现有 `ANQUAN_DATA_DIR` 下的数据库，不移动或重建数据库。
+
+对于既有 `anquan-master` systemd 服务，更新主控程序后复制专用配置：
+
+```sh
+sudo install -m 0644 deploy/local-api.env.example /etc/anquan-master-local-api.env
+sudo install -d -m 0755 /etc/systemd/system/anquan-master.service.d
+sudo install -m 0644 deploy/local-api.conf /etc/systemd/system/anquan-master.service.d/local-api.conf
+sudo systemctl daemon-reload
+sudo systemctl restart anquan-master
+curl -fsS http://127.0.0.1:10110/healthz
+```
+
+`local-api.conf` 追加读取 `/etc/anquan-master-local-api.env`，只覆盖 HTTP 监听和公开 Origin；原 `/etc/anquan-master.env` 中的数据库目录、Agent TCP/UDP 监听等设置继续生效。上述示例仅用于原生 systemd 主控，Docker Compose 不应将容器 HTTP 监听改为 loopback。
+
+在同机 Nginx 的现有 HTTPS 网站 `server` 块中，将 `/api/` 上游指向本机并保留浏览器 Host：
+
+```nginx
+location /api/ {
+    proxy_pass http://127.0.0.1:10110;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    client_max_body_size 5m;
+    proxy_read_timeout 30s;
+}
+```
+
+已有 `/api/` 块时替换该块，不重复定义。检查配置后执行 `sudo nginx -t && sudo systemctl reload nginx`。若使用前端仓库的原生部署脚本，请显式传入 `127.0.0.1:10110` 覆盖曾保存的远程上游。后端返回 JSON `请求来源不受信任` 时检查公开 Origin；若响应是 HTML 403，则可能由 Nginx/WAF 拦截或入口改写了后端错误，应检查网站的 `limit_except`、访问控制、PUT 拦截及错误页配置，并结合主控日志确定请求是否到达。
 
 ## 忘记密码
 

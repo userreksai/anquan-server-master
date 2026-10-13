@@ -117,3 +117,36 @@ func TestTCPListenFailureAbortsMasterStartup(t *testing.T) {
 		}
 	}
 }
+
+func TestInvalidPublicOriginAbortsBeforeDatabaseCreation(t *testing.T) {
+	t.Setenv("ANQUAN_SECURE_COOKIE", "false")
+	for _, useEnvironment := range []bool{false, true} {
+		dir := filepath.Join(t.TempDir(), "not-created")
+		args := []string{"--data-dir", dir, "--http", "invalid-listen-address"}
+		if useEnvironment {
+			t.Setenv("ANQUAN_PUBLIC_ORIGIN", "https://*.ops.tw")
+		} else {
+			t.Setenv("ANQUAN_PUBLIC_ORIGIN", "")
+			args = append(args, "--public-origin", "https://prodsafety.ops.tw/api")
+		}
+		if err := run(args); err == nil || !strings.Contains(err.Error(), "--public-origin/ANQUAN_PUBLIC_ORIGIN") {
+			t.Fatalf("invalid public origin was not rejected before startup: %v", err)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("invalid public origin created the database directory: %v", err)
+		}
+	}
+}
+
+func TestPublicOriginFlagOverridesEnvironment(t *testing.T) {
+	t.Setenv("ANQUAN_SECURE_COOKIE", "false")
+	t.Setenv("ANQUAN_PUBLIC_ORIGIN", "https://*.ops.tw")
+	dir := filepath.Join(t.TempDir(), "data")
+	err := run([]string{"--data-dir", dir, "--public-origin", "https://prodsafety.ops.tw", "--http", "invalid-listen-address", "--udp", "127.0.0.1:0"})
+	if err == nil || strings.Contains(err.Error(), "--public-origin/ANQUAN_PUBLIC_ORIGIN") {
+		t.Fatalf("explicit public origin did not override environment: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "anquan.db")); err != nil {
+		t.Fatalf("valid explicit origin did not reach local database startup: %v", err)
+	}
+}

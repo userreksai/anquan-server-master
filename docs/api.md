@@ -1,6 +1,6 @@
 # HTTP API
 
-基址：`http://主控IP:10110`。生产浏览器使用前端同源 `/api` 代理。除登录、健康检查外均须登录 Cookie；JSON 写请求使用 `Content-Type: application/json`。带 `Origin` 的写请求必须匹配 HTTP `Host`，反向代理需保留原始 Host（包括端口）。
+基址：`http://主控IP:10110`。生产浏览器使用前端同源 `/api` 代理。除登录、健康检查外均须登录 Cookie；JSON 写请求使用 `Content-Type: application/json`。默认带 `Origin` 的写请求必须匹配 HTTP `Host`，反向代理需保留原始 Host（包括端口）。设置 `ANQUAN_PUBLIC_ORIGIN` 或 `--public-origin` 后，只接受该明确来源的协议、主机名和端口，不信任代理转发头；跨站请求仍拒绝。本机 Nginx 可将 `/api/` 直接转发到 `127.0.0.1:10110`，模板保存直接写主控本机 SQLite。
 
 错误统一 `{ "message": "错误原因" }`，未登录为 401，非法参数 400，记录不存在 404。所有返回时间均为带时区 ISO8601。机器和事件列表返回 `{items: [], total: 0, page: 1, page_size: 20}`，页大小 1–100。webhook 列表返回数组。
 
