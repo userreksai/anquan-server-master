@@ -37,6 +37,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "reset-admin" {
 		return reset(args[1:])
 	}
+	if len(args) > 0 && args[0] == "save-agent-template" {
+		return saveAgentTemplate(args[1:])
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
@@ -166,5 +169,38 @@ func reset(args []string) error {
 		return err
 	}
 	fmt.Println("admin 密码已重置，所有现有登录会话已失效。")
+	return nil
+}
+
+func saveAgentTemplate(args []string) error {
+	flags := flag.NewFlagSet("save-agent-template", flag.ContinueOnError)
+	dataDir := flags.String("data-dir", env("ANQUAN_DATA_DIR", "/data/anquan"), "existing SQLite data directory")
+	yamlStdin := flags.Bool("yaml-stdin", false, "read the YAML template from stdin")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional argument")
+	}
+	if !*yamlStdin {
+		return errors.New("必须通过 --yaml-stdin 输入 YAML 模板")
+	}
+	// Invalid or oversized input must never open or initialize the database.
+	config, err := server.ReadAgentTemplateYAML(os.Stdin)
+	if err != nil {
+		return err
+	}
+	store, err := server.OpenExisting(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err = store.SaveAgentConfigTemplate(context.Background(), config); err != nil {
+		return err
+	}
+	fmt.Println("Agent 配置模板已存储到本机数据库。")
 	return nil
 }

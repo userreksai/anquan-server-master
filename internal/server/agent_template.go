@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"net/http"
 )
 
@@ -26,8 +28,31 @@ func (s *Server) saveAgentConfigTemplate(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	// A single atomic upsert preserves the exact YAML, including comments.
-	_, err := s.Store.DB.ExecContext(r.Context(), `INSERT INTO agent_config_template(id,yaml) VALUES(1,?)
-ON CONFLICT(id) DO UPDATE SET yaml=excluded.yaml`, config)
+	err := s.Store.SaveAgentConfigTemplate(r.Context(), config)
 	s.respond(w, agentConfigTemplate{YAML: &config}, err)
+}
+
+// ReadAgentTemplateYAML limits stdin before decoding, sharing the HTTP YAML
+// validation while preserving the exact content, including comments/newlines.
+func ReadAgentTemplateYAML(input io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(input, maxAgentYAMLBytes+1))
+	if err != nil {
+		return "", err
+	}
+	config := string(data)
+	if err = validateAgentYAML(config); err != nil {
+		return "", err
+	}
+	return config, nil
+}
+
+// SaveAgentConfigTemplate stores one shared template atomically. Both the local
+// CLI and authenticated HTTP handlers use this operation; it sends no traffic.
+func (s *Store) SaveAgentConfigTemplate(ctx context.Context, config string) error {
+	if err := validateAgentYAML(config); err != nil {
+		return err
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO agent_config_template(id,yaml) VALUES(1,?)
+ON CONFLICT(id) DO UPDATE SET yaml=excluded.yaml`, config)
+	return err
 }

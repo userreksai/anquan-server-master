@@ -76,6 +76,18 @@ Lark/飞书即使 HTTP 200，业务码非零、缺失或无效仍返回 `success
 
 总览字段：`machines,online_machines,events,alerts,open_alerts,ssh_logins,pending_notifications`。待通知数量包括已暂停地址的未发送记录。
 
+## 共享 Agent YAML 模板
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/settings/agent-config-template` | 返回 `{"yaml":"最近保存的原文"}`；尚未保存时为 `{"yaml":null}` |
+| POST | `/api/settings/agent-config-template` | 默认保存方法，请求 `{"yaml":"配置原文"}` |
+| PUT | `/api/settings/agent-config-template` | 兼容原保存方法，与 POST 相同处理 |
+
+POST/PUT 均要求管理员登录、同源校验及 `application/json`。最大 4 MiB、单份 YAML 键值映射，拒绝重复字段、多文档和无效语法；保留原文注释、缩进和换行。成功 HTTP 200 返回已保存原文，只原子覆盖本机 SQLite 中唯一的共享模板，不连接 Agent，不影响配置下发任务。未登录为 401，来源拒绝为 403，非法输入为 400，失败不覆盖原模板。
+
+如中转入口拒绝网页写请求且无法调整，可在主控本机通过 `anquan-master save-agent-template --data-dir /data/anquan --yaml-stdin` 输入 YAML。该命令使用同一校验和保存逻辑，限既有初始化数据库；不进行 HTTP 请求、不创建或迁移数据库、不输出模板内容。建议以主控服务账号执行，保存后 GET 读取立即生效。具体文件重定向流程见 README。
+
 ## 按机器下发 Agent 配置
 
 `GET /api/settings/agent-config-deliveries` 返回 `{items:[...]}`，包含全部已登记机器。每项字段为 `machine_ip,host,alias,connected,revision,status,error,updated_at,applied_at`。`connected` 表示 TCP 配置连接，独立于 UDP 心跳在线状态；`status` 为 `unassigned`（未分配）、`pending`（等待连接或确认）、`applied`（Agent 已应用并确认）、`failed`（Agent 拒绝并返回错误）。GET 不返回配置正文。

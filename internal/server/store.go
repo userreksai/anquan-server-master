@@ -1,11 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -28,7 +32,40 @@ func Open(dataDir string) (*Store, error) {
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	return openDatabase(path, true)
+}
+
+// OpenExisting opens an initialized master database without creating a file or
+// migrating/initializing its schema. SQLite's mode=rw also prevents creation if
+// the file disappears between the filesystem check and opening the database.
+func OpenExisting(dataDir string) (*Store, error) {
+	path, err := filepath.Abs(filepath.Join(dataDir, "anquan.db"))
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("指定目录中不存在可读取的 anquan.db；请确认 --data-dir: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("anquan.db 必须是既有的普通数据库文件")
+	}
+	header := make([]byte, 16)
+	if _, err = io.ReadFull(f, header); err != nil || !bytes.Equal(header, []byte("SQLite format 3\x00")) {
+		return nil, fmt.Errorf("anquan.db 不是已初始化的 SQLite 数据库；不会创建或重建数据库")
+	}
+	uriPath := filepath.ToSlash(path)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath // file:///C:/... on Windows, never file://C:/...
+	}
+	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=rw"}).String()
+	return openDatabase(dsn, false)
+}
+
+func openDatabase(dsn string, migrate bool) (*Store, error) {
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -36,13 +73,27 @@ func Open(dataDir string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	s := &Store{DB: db}
-	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;`); err != nil {
+	if _, err = db.Exec(`PRAGMA busy_timeout=5000;`); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if err = s.migrate(); err != nil {
+	if !migrate {
+		// Verify this is a master template database before changing journal mode.
+		var present int
+		if err = db.QueryRow(`SELECT 1 FROM sqlite_schema WHERE type='table' AND name='agent_config_template'`).Scan(&present); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("现有数据库缺少模板表；请确认 --data-dir 指向运行中的新版主控数据库")
+		}
+	}
+	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;`); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if migrate {
+		if err = s.migrate(); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
