@@ -11,7 +11,9 @@ setup:
   interval_seconds: 300
 ```
 
-机器 IP 自动识别：配置 TCP Master 返回连接的实际来源地址，Agent 将其用于全部 UDP 上报；跨公网 NAT 直连时为公网出口 IP。无需配置 agent_ip，旧 YAML 的该字段以及 ANQUAN_AGENT_IP 被忽略。没有识别结果时 UDP ip 为空，接收 Master 使用数据报来源地址。多个节点共用同一出口公网 IP 时仍受现有 IP 主键约束，不能区分为不同机器。
+机器 IP 自动获取：新版 Agent 读取连接配置 TCP Master 时操作系统选择的 `LocalAddr`，报告本机出口地址并用于全部 UDP 上报。多网卡按到配置主控的路由选择地址，容器内运行时为容器网络地址；不从主机名推导 IP，不调用公网 IP 查询服务。无需配置 agent_ip，旧 YAML 的该字段以及 ANQUAN_AGENT_IP 被忽略。主控以报告地址区分机器和配置连接，另存实际 TCP/UDP 对端为 `source_ip`，经中转时来源可以是代理 IP。
+
+例如 `172.22.0.27`、`172.22.0.28` 经同一 Nginx `172.22.240.6` 转发，机器标识仍为各自本机 IP，来源地址记录为 `172.22.240.6`。这不要求 Nginx 添加 PROXY protocol；当前主控仍不解析 PROXY protocol 帧。不同网络中重复的私网 IP 仍受现有 IP 主键约束，不能区分为不同机器。
 
 主控以 `ip` 为机器主键，`host` 仅作为主机名展示。接收旧 Agent 的报文缺少 `ip` 时，使用 UDP 数据报来源 IP。UDP 来源端口是临时端口，不能当作机器标识。机器 IP 变化会形成新的机器记录。该协议用于内网传输，无需认证或加密；主控开通对应 Agent 机器访问 `55555/udp` 的网络即可。
 
@@ -71,16 +73,20 @@ v0.6.1 不要求本地 `config.age`：首次指定 Master 后自动保存 `agent
 每帧是 UTF-8 JSON 加换行（NDJSON），最大 8 MiB，`version: 1`。JSON 字符串内的 age 密文换行使用 JSON 转义。第一帧：
 
 ```json
-{"version":1,"type":"hello","discover_ip":true,"host":"node-a","agent_version":"0.6.2"}
+{"version":1,"type":"hello","ip":"172.22.0.27","reported_ip":"172.22.0.27","host":"ip-172-22-0-27","agent_version":"0.6.6"}
 ```
 
-主控按 TCP 实际来源 IP 登记机器，先回复身份，再发送最新分配：
+新 hello 不启用 `discover_ip`。主控优先规范化 `reported_ip` 并按其登记机器，TCP 实际来源另存 `source_ip`，先确认身份，再发送最新分配：
 
 ```json
-{"version":1,"type":"identity","ip":"49.7.214.217"}
+{"version":1,"type":"identity","ip":"172.22.0.27"}
 ```
 
-Agent 验证并保存此地址，后续数据上报使用该 IP。旧 Agent 不发送 discover_ip 时，主控保留旧握手流程及上报 IP 语义，不主动发送新 identity 帧。识别地址是主控实际看到的连接来源，经代理或内网路径时可能是代理/内网地址，并非通用公网 IP 查询服务。
+`reported_ip` 必须为可用单播地址，拒绝未指定、组播、广播、回环、链路本地或带 zone 的地址；IPv4 映射 IPv6 地址规范化为 IPv4。非空 `ip` 必须规范化后与 `reported_ip` 一致，同时启用 `discover_ip` 的新报告模式明确拒绝，不静默回退为中转来源。新版 Agent 在 hello 前已保存本机出口 IP，后续 TCP 确认和 UDP 载荷使用同一标识。
+
+旧发现 hello（`discover_ip:true`、不带 `reported_ip`）仍按 TCP 实际来源登记并回复 identity，即使同时带旧 IP 也保留原行为。旧显式 IP hello（不带 `reported_ip`、不启用发现）仍按 `ip` 登记，不额外回复 identity；旧 hello 没有 `ip` 时使用实际来源。旧 Master 忽略新增字段时仍可按新 Agent 的显式 `ip` 登记和下发，因此新 Agent 不依赖 identity 回包完成本机 IP 获取。旧 UDP 缺少 `ip` 时继续使用数据报来源。
+
+本次身份扩展保留协议 `version:1`，不改变数据库结构。升级后原中转 IP 的机器、历史和分配记录不会自动搬移或删除，因为其中可能聚合多节点数据；应在页面按新本机 IP 重新选择和下发，核对后再处理原记录。
 
 没有分配时，revision 和 ciphertext 同时为空：
 

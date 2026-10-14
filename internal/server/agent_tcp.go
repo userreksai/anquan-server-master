@@ -22,6 +22,7 @@ type agentConfigFrame struct {
 	Version      int    `json:"version"`
 	Type         string `json:"type"`
 	IP           string `json:"ip,omitempty"`
+	ReportedIP   string `json:"reported_ip,omitempty"`
 	Host         string `json:"host,omitempty"`
 	AgentVersion string `json:"agent_version,omitempty"`
 	DiscoverIP   bool   `json:"discover_ip,omitempty"`
@@ -142,7 +143,27 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 		return
 	}
 	ip := hello.IP
-	if hello.DiscoverIP || ip == "" {
+	if hello.ReportedIP != "" {
+		// This additive mode reports the local address chosen by the Agent's
+		// outbound TCP route. Keep the transport peer separately as source_ip.
+		if hello.DiscoverIP {
+			return
+		}
+		ip, err = normalizeIP(hello.ReportedIP)
+		if err != nil {
+			return
+		}
+		reported := net.ParseIP(ip)
+		if !reported.IsGlobalUnicast() || reported.IsLoopback() || reported.IsLinkLocalUnicast() {
+			return
+		}
+		if hello.IP != "" {
+			legacyIP, err := normalizeIP(hello.IP)
+			if err != nil || legacyIP != ip {
+				return
+			}
+		}
+	} else if hello.DiscoverIP || ip == "" {
 		ip = source
 	}
 	agent.ip, err = normalizeIP(ip)
@@ -159,9 +180,10 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 	if previous != nil {
 		_ = previous.conn.Close()
 	}
-	// New agents request discovery and use this observed peer IP for every UDP
-	// destination. Legacy agents retain their original hello/response protocol.
-	if hello.DiscoverIP {
+	// Confirm the new reported identity before configuration delivery. Old
+	// discovery agents still receive the observed peer, while legacy explicit
+	// IP agents retain their original hello/response protocol.
+	if hello.ReportedIP != "" || hello.DiscoverIP {
 		if err := writeAgentFrame(agent.conn, agentConfigFrame{Version: 1, Type: "identity", IP: agent.ip}); err != nil {
 			return
 		}
