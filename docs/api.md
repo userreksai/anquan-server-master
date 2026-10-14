@@ -31,6 +31,8 @@
 
 机器字段：`ip,host,source_ip,reported_ip,alias,notes,first_seen,last_seen,last_event_at,last_summary,interval_seconds,heartbeat_interval_seconds,event_count,alert_count,open_alert_count,login_count,online,status,offline_after_seconds`。`status` 为 `online` / `abnormal_offline`，`offline_after_seconds` 给出当前机器的离线阈值。机器由首次心跳/事件自动建立，后续上报自动恢复在线；心跳不增加事件数量。
 
+新版 Agent 自动报告连接配置主控的本机出口 IP，主控以规范化后的报告地址作为 `ip` 和配置下发机器标识，保存为 `reported_ip`。`source_ip` 独立记录主控看到的 TCP/UDP 对端，经中转时可为代理地址；`host` 只是 Agent 主机名，不用于推导 IP。不同报告 IP 经同一中转时分别建立机器记录，旧聚合记录不自动迁移。旧发现模式和缺少报告 IP 的旧 UDP 报文保持原有来源地址语义，详见 Agent 协议。
+
 事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 保留 Agent 上报或主控检测的证据，不接受经 HTTP 修改检测证据。
 
 主控每秒检测机器离线，生成 `type: alert`、`data.module: machine`、`data.kind: abnormal_offline` 的事件。`data` 包含 `target`（机器 IP）、中文 `message`、可选 `alias`、`last_seen`、`offline_since`、`detected_at` 和 `offline_after_seconds`。外层 `time` 为离线阈值到达时间，`received_at` 为检测时间。每次持续离线仅生成一次，重启及删除事件不重置；有效上报恢复在线后，下次离线才创建新事件。所有启用地址各入队一次，失败持久重试；持续离线期间后来启用的地址会补充尚未存在的任务。

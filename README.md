@@ -12,7 +12,7 @@
 
 Go 主控通过 `55555/udp` 接收 Anqu Agent 的巡检摘要、文件/进程告警及每次 SSH 登录，通过 `10110/tcp` 提供经过登录鉴权的管理 API，并监听 `55556/tcp`，供 Agent 主动连接后接收配置。配套 Vue 前端 `anquan-server-web` 使用 `10111/tcp`。
 
-在页面“管理设置 → Age 配置加密”编辑 YAML，点击“下发配置”选择机器。主控将配置加密后按机器保存在 SQLite，并通过现有 TCP 长连接发送；离线机器重连时自动收到最近版本，主控重启后也会继续发送。Agent 校验、原子保存 `config.master.age` 并切换后确认，页面区分待下发、已应用和失败。未分配配置时使用可选本地 config.age，没有本地配置则保持等待。Agent 通过 ANQUAN_MASTER 独立连接配置主控，握手自动识别来源 IP；下发 YAML 的 server 列表控制全部 UDP 数据目标，裸 IP 使用 55555，不影响 TCP 配置连接。配置通道只允许可信 Agent 网络访问，Agent 不监听入站端口。接口与协议见 [API](docs/api.md) 和 [Agent 协议](docs/agent-protocol.md)。
+在页面“管理设置 → Age 配置加密”编辑 YAML，点击“下发配置”选择机器。主控将配置加密后按机器保存在 SQLite，并通过现有 TCP 长连接发送；离线机器重连时自动收到最近版本，主控重启后也会继续发送。Agent 校验、原子保存 `config.master.age` 并切换后确认，页面区分待下发、已应用和失败。未分配配置时使用可选本地 config.age，没有本地配置则保持等待。Agent 通过 ANQUAN_MASTER 独立连接配置主控，握手自动上报本机出口 IP；下发 YAML 的 server 列表控制全部 UDP 数据目标，裸 IP 使用 55555，不影响 TCP 配置连接。配置通道只允许可信 Agent 网络访问，Agent 不监听入站端口。接口与协议见 [API](docs/api.md) 和 [Agent 协议](docs/agent-protocol.md)。
 
 SQLite 数据文件为 `/data/anquan/anquan.db`。第一次启动自动创建目录、表和 `admin` 账号，默认密码 **`admin1818.`**（含末尾英文句点）。再次启动保留原密码、会话及全部数据。密码使用 bcrypt，浏览器使用 HttpOnly / SameSite=Strict Cookie，会话有效期 24 小时。
 
@@ -181,7 +181,9 @@ server:
   - 172.22.0.100:55555
 ```
 
-机器以 IP 为主键，保存 hostname、来源 IP、别名、备注及最近活动。新版 Agent 通过配置 TCP 握手请求来源识别，Master 返回实际来源 IP（跨公网 NAT 直连时为公网出口 IP），Agent 向全部 UDP 主控使用此 IP；无识别结果时空 ip 按 UDP 来源登记。无需手工 agent_ip。旧 Agent 的握手语义保持兼容。
+机器以 IP 为主键，保存 hostname、来源 IP、别名、备注及最近活动。新版 Agent 自动获取连接配置主控时 TCP `LocalAddr` 的本机出口 IP，在 hello 的 `ip` 和 `reported_ip` 中报告同一地址，并用于全部 UDP 上报；无需手工 agent_ip，也不调用公网 IP 查询服务。主控以该地址区分机器和配置连接，独立保存实际 TCP/UDP 对端为 `source_ip`。例如两个 Agent 经 `172.22.240.6` 中转后，可分别登记为 `172.22.0.27`、`172.22.0.28`，中转地址只作为来源记录。多网卡机器使用操作系统到配置主控的路由出口，容器内 Agent 使用容器网络地址。
+
+主控保留旧 `discover_ip` 握手的来源地址语义和旧显式 IP 协议。本次不改变数据库结构，不自动搬移或删除已经以中转 IP 聚合的历史记录；升级 Master 和 Agent 后，在页面选择新的本机 IP 重新下发配置。原聚合记录可能包含多台机器的历史，应确认后再处理。不同网络中重复的本机 IP 仍受 IP 主键约束，不能自动区分为独立机器；报告 IP 不构成节点认证，TCP/UDP 端口继续限可信 Agent 网络访问。
 
 事件保存 `event_id`、机器 IP、类型、发生时间、接收时间、原始 data、处理状态和备注。文件路径及 MD5 前后值完整保留。SSH 来源 IP 与被监控机器 IP 分开，筛选以实际 `login_time` 为准。机器自动由上报建立，页面可查询、修改别名/备注及删除；事件由 UDP 上报或主控离线检测创建，页面可查询、更新处理状态/备注和删除。删除机器级联删除其事件、待发通知及离线状态，Agent 后续上报会重新建立该机器。
 
