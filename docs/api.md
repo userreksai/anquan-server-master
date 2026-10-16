@@ -27,7 +27,7 @@
 | POST | `/api/webhooks/{id}/test` | 测试已保存配置；空请求体或 `{message?}`；发送失败 502 |
 | POST | `/api/webhooks/test` | 测试当前表单 `{url,name?,format?,enabled?,message?}`，不保存；发送失败 502 |
 
-`type` 为 `alert`、`ssh_login`、`command_history`、`scan_summary`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。按事件发生时间倒序、整数 ID 倒序稳定分页；登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
+`type` 为 `alert`、`ssh_login`、`command_history`、`scan_summary`、`security_event`、`component_status`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。按事件发生时间倒序、整数 ID 倒序稳定分页；登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
 
 机器字段：`ip,host,source_ip,reported_ip,alias,notes,first_seen,last_seen,last_event_at,last_summary,interval_seconds,heartbeat_interval_seconds,event_count,alert_count,open_alert_count,login_count,online,status,offline_after_seconds`。`status` 为 `online` / `abnormal_offline`，`offline_after_seconds` 给出当前机器的离线阈值。机器由首次心跳/事件自动建立，后续上报自动恢复在线；心跳不增加事件数量。
 
@@ -102,4 +102,83 @@ POST/PUT 均要求管理员登录、同源校验及 `application/json`。最大 
 
 沿用管理员登录、JSON、同源校验。YAML 最大 4 MiB，必须是单份键值映射；机器列表必须非空且已登记。主控加密后在一个事务中覆盖所选机器的最新分配，返回 `{items:[所选机器的状态]}`。HTTP 200 表示主控已保存；是否在节点生效须查看后续 `applied` 确认。离线或旧版 Agent 保持待下发，新版 Agent 连接后自动投递。旧版本 ACK 不会覆盖更新版本状态。共享模板的存储与下发各自独立。
 
-Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v6，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
+Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v7，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
+
+## 安全组件表单与状态
+
+沿用管理员 Cookie、JSON、同源检查、`Cache-Control: no-store`；不改变管理端口和配置分发通道。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/settings/security-profile/defaults` | `{security:{...}}`；表单基础范例，非已应用配置 |
+| POST | `/api/settings/security-profile/compose` | `{yaml:string,security?:object}`，返回 `{yaml:string,security:object|null}` |
+| GET | `/api/security/status` | `{items:[{machine_ip,host,time,received_at,data}]}`；可选 `machine_ip` 精确筛选 |
+| GET | `/api/security/sudo-sessions` | `machine_ip,page,page_size`；分页返回 sudo 录制会话 |
+| GET | `/api/security/sudo-sessions/{id}/files/{file}` | 下载完整原始会话文件；缺失 404，未收齐 409 |
+
+compose 省略 `security` 时只解析并返回原文及当前安全配置；配置中没有该节点则 `security:null`。提供 `security` 时按对象深合并，数组及 `policies.sysctl` 整体替换，因此删除数组项或内核参数可生效。未涉及的节点、注释与自定义顶层字段保留；合成时规范化为两空格缩进。拒绝无效类型、新增/改写的未知安全字段、重复键、多文档、非字符串映射键，以及无法安全编辑的 YAML 锚点/别名；已存在的未知字段可以原样保留。最大 YAML 4 MiB；失败不改变任何模板或机器配置。compose 不执行保存、加密或下发，后续复用现有接口。
+
+初版字段与基础范例：
+
+```yaml
+security:
+  enabled: true
+  install_missing: true
+  poll_interval_seconds: 2
+  status_interval_seconds: 30
+  max_queue_events: 10000
+  auditd:
+    enabled: true
+    audit_exec: true
+    watch_paths: [/etc/passwd, /etc/group, /etc/shadow, /etc/ssh, /etc/sudoers, /etc/sudoers.d, /etc/crontab, /etc/cron.d]
+    rules: []
+  native_fim:
+    enabled: true
+    paths: [/etc/passwd, /etc/group, /etc/shadow, /etc/ssh, /etc/sudoers, /etc/sudoers.d, /etc/crontab, /etc/cron.d]
+    poll_interval_seconds: 30
+    report_changes: false
+    max_diff_bytes: 8192
+  ssh_auth:
+    enabled: true
+    poll_interval_seconds: 5
+    initial_lookback_seconds: 300
+    alert_threshold: 5
+    window_seconds: 300
+  sudo:
+    enabled: true
+    io_logging: true
+    upload_io: false
+    max_session_bytes: 20971520
+    grants: []
+  tetragon:
+    enabled: false
+    version: ""
+    download_url: ""
+    sha256: ""
+    config: ""
+    tracing_policy: ""
+  policies:
+    mode: audit
+    ssh:
+      enabled: false
+      password_authentication: "no"
+      permit_root_login: prohibit-password
+      allow_users: []
+      allow_sources: []
+    sysctl: {}
+    session_timeout_seconds: 0
+    disable_ctrl_alt_del: false
+    grub:
+      enabled: false
+      password_hash: ""
+```
+
+原有配置没有 `security` 时继续兼容，不隐式开启安装。表单范例主动开启基础审计和文件属性监控，Tetragon 和 I/O 上传按需启用；`policies.mode: audit` 默认只检查主机加固策略。Master 验证配置形状与字段名，Agent 完成对应平台、路径、范围和实际执行校验。
+
+`security.sudo.grants` 为整体替换的授权数组，最多 128 项：`{user:string,run_as?:string,commands:string[],nopasswd?:boolean}`。user/run_as 是本机账户名称，run_as 留空或省略使用 root；commands 每项为绝对命令路径，可附字面参数，每条最多 1024 字节，每个授权 1–64 条命令，拒绝 sudoers 元字符、通配符和换行；nopasswd 默认 false。例：`{user: ops, run_as: root, commands: ["/usr/bin/systemctl restart nginx.service"], nopasswd: false}`。Agent 只管理自己的 sudoers 片段，不删除其他已有的 sudo、wheel 或云镜像广泛授权；新增授权不能证明用户已经实现最小权限。未指定命令参数时也应了解该二进制允许的参数及提权能力。授权变更的实际应用仍由 Agent 策略和校验结果决定。
+
+`component_status.data.components` 每项包含 `name,enabled,installed,running,state`，可附 `message,error,version,config_hash,applied_at`；其他队列/采集进度字段原样保留。快照按 Agent `time` 更新，旧上报不会回滚新状态。配置交付 `applied` 只表示 Agent 已接受配置；安装、reload、内核能力等结果以组件状态为准。
+
+`security_event.data` 含 `source,kind,severity,message`，可附 `path,user,uid,pid,ppid,command,session_id,details` 及来源证据。接受 `debug,info,notice,warning,error,critical`；只将后三种级别入 webhook 队列，重复事件不重复通知。普通命令和组件状态不自动通知。sudo `io_chunk` 单独处理，不进入事件表与 webhook 队列。
+
+sudo 会话分页结构：`{items:[{id,machine_ip,host,session_id,generation,time,received_at,files:[{name,size,received_bytes,complete}]}],total,page,page_size}`。下载 `file` 仅允许 `log,log.json,timing,stdin,stdout,stderr,ttyin,ttyout`，`id` 为数据库整数 ID。下载为原始二进制 `application/octet-stream`，保存同一会话的全部完整文件后可在支持的环境使用 `sudoreplay`。初版不提供网页回放与自动保留期限清理；删除机器级联删除会话及分片。

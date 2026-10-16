@@ -227,3 +227,31 @@ Master v0.6.0 将新入库的 `ssh_login` 与通知任务在同一事务提交�
 同一报告构造相同的事件 ID，多个 UDP 副本按 `(ip,event_id)` 去重。登录使用机器 IP、主机名、事件类型与来源记录 `id` 生成标识，同一登录跨扫描重新读取保持相同标识；不同来源 ID 的两次登录即使用户/IP/时间完全相同也会分别保留。没有来源 ID 的兼容记录按其原始时间和内容生成标识。告警与摘要按扫描时间和内容生成标识，持续缺失在下轮仍产生新记录；文件变化因本地发布失败而跨轮重新检测，也可能形成新的告警观察记录。
 
 常规巡检告警、登录、摘要和心跳的 Agent → Master 传输没有 ACK 或持久重传。成功发送只表示本地网络栈接受，不代表主控已存储；网络丢包、主控停机或超大数据报可能导致缺记录。命令采集通道采用上述落库确认及持久重试。Master → webhook 的告警及登录通知在入库后采用持久重试，重复事件不重复入队。
+
+## 安全组件事件与状态
+
+继续使用同一 v1 Envelope、UDP 55555 和 `ack_requested`，不增加端口；所有合法的请求确认都在事务提交后发送，包括重复报文。配置继续使用现有 TCP 55556 的 age YAML 分发。
+
+`type: security_event` 的 `data` 必须包含非空 `source,kind,message` 和有效 `severity`（`debug/info/notice/warning/error/critical`），其余来源证据原样保存。普通事件按 `(machine_ip,event_id)` 幂等入库；仅 `warning/error/critical` 创建 webhook 任务。
+
+`type: component_status` 的 `data.components` 是最多 32 个组件的数组，每项名称唯一、非空，包含 `name,enabled,installed,running,state`，可附 `message,error,version,config_hash,applied_at`；`applied_at` 使用 RFC3339 时间。附加 `queue` 等字段保持原样。状态历史进入事件表，并在同一事务维护每台机器最新快照；只有 Agent 时间不旧于现有快照才替换，状态不触发 webhook。
+
+sudo I/O 使用 `type: security_event`、`source: sudo`、`kind: io_chunk`、`severity: info`、非空 `message`，证据放在 `data.details`：
+
+```json
+{
+  "session_id": "00/00/AB",
+  "generation": "session-inode-start-identity",
+  "file": "stdout",
+  "offset": 0,
+  "content_base64": "aGVsbG8K",
+  "total_size": 6,
+  "complete": true
+}
+```
+
+`generation` 必须非空，只允许字母、数字、下划线、点、冒号、连字符，最多 128 字节；会话被重用或文件截断必须切换 generation，防止拼接不同记录。`session_id` 最多 128 字节，仅允许字母、数字、下划线、连字符及正常层级 `/`，禁止点和路径穿越。`file` 严格限定为 `log/log.json/timing/stdin/stdout/stderr/ttyin/ttyout`。
+
+Base64 严格解码后每片最多 24 KiB，`offset` 和 `total_size` 为非负字节数，单文件最大 64 MiB，分片范围不能超出 total_size。同一会话、generation、文件、offset 的相同 bytes 幂等；同 offset 不同 bytes、分片重叠、冲突 event_id 拒绝且不确认。允许乱序到达，只有完整不重叠覆盖 `0..total_size` 且收到 `complete:true` 才可下载。空文件使用 offset=0、total_size=0、空 Base64、complete=true。
+
+分片存入独立会话、文件及 chunk 表，不向普通事件表重复写 Base64，不创建 webhook；提交后沿用原 event_id ACK。原始文件内容包括 sudo 录制格式字节，Agent 不应在未标识时混合压缩和未压缩文件。HTTP 下载需管理员登录，详情见 API 文档。

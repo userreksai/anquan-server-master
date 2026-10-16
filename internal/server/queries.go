@@ -49,7 +49,7 @@ func ParseFilter(values url.Values) (Filter, error) {
 		}
 		f.MachineIP = v
 	}
-	if f.Type != "" && f.Type != "alert" && f.Type != "ssh_login" && f.Type != "scan_summary" && f.Type != "command_history" {
+	if f.Type != "" && f.Type != "alert" && f.Type != "ssh_login" && f.Type != "scan_summary" && f.Type != "command_history" && f.Type != "security_event" && f.Type != "component_status" {
 		return f, fmt.Errorf("事件类型无效")
 	}
 	if f.Status != "" && f.Status != "open" && f.Status != "resolved" {
@@ -82,10 +82,14 @@ func like(q string) string {
 
 type scanner interface{ Scan(...any) error }
 
+// Normal telemetry is searchable, but only elevated security events count as
+// alerts alongside the original alert envelope type.
+const alertEventCondition = `(type='alert' OR (type='security_event' AND json_extract(data,'$.severity') IN ('warning','error','critical')))`
+
 const machineSelect = `SELECT m.ip,m.host,m.source_ip,m.reported_ip,m.alias,m.notes,m.first_seen,m.last_seen,m.last_event_at,m.last_summary,m.interval_seconds,m.heartbeat_interval_seconds,
  (SELECT COUNT(*) FROM events e WHERE e.machine_ip=m.ip),
- (SELECT COUNT(*) FROM events e WHERE e.machine_ip=m.ip AND e.type='alert'),
- (SELECT COUNT(*) FROM events e WHERE e.machine_ip=m.ip AND e.type='alert' AND e.status='open'),
+ (SELECT COUNT(*) FROM events e WHERE e.machine_ip=m.ip AND ` + alertEventCondition + `),
+ (SELECT COUNT(*) FROM events e WHERE e.machine_ip=m.ip AND ` + alertEventCondition + ` AND e.status='open'),
  (SELECT COUNT(*) FROM events e WHERE e.machine_ip=m.ip AND e.type='ssh_login') FROM machines m`
 
 func scanMachine(row scanner) (Machine, error) {

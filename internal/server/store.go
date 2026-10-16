@@ -110,7 +110,7 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion > 6 {
+	if schemaVersion > 7 {
 		return fmt.Errorf("unsupported database schema version %d", schemaVersion)
 	}
 	_, err = tx.Exec(`
@@ -193,6 +193,11 @@ PRAGMA user_version=6;`); err != nil {
 			return err
 		}
 	}
+	if schemaVersion < 7 {
+		if err := migrateSecurityEvents(tx); err != nil {
+			return err
+		}
+	}
 	var count int
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM users WHERE username='admin'`).Scan(&count); err != nil {
 		return err
@@ -240,7 +245,7 @@ func (s *Store) ResetAdmin(ctx context.Context, password string) error {
 
 func (s *Store) Overview(ctx context.Context) (Overview, error) {
 	var o Overview
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(type='alert'),0), COALESCE(SUM(type='alert' AND status='open'),0),
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(`+alertEventCondition+`),0), COALESCE(SUM(`+alertEventCondition+` AND status='open'),0),
  COALESCE(SUM(type='ssh_login'),0), (SELECT COUNT(*) FROM outbox WHERE delivered_at IS NULL) FROM events`).
 		Scan(&o.Events, &o.Alerts, &o.OpenAlerts, &o.SSHLogins, &o.PendingNotifications)
 	if err != nil {
