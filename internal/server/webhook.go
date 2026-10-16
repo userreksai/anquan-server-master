@@ -45,6 +45,25 @@ func AlertText(event Event) string {
 }
 
 func NotificationText(event Event) string {
+	if event.Type == "security_event" {
+		var security struct {
+			Source   string `json:"source"`
+			Kind     string `json:"kind"`
+			Severity string `json:"severity"`
+			Message  string `json:"message"`
+			Path     string `json:"path"`
+			User     string `json:"user"`
+			Command  string `json:"command"`
+		}
+		_ = json.Unmarshal(event.Data, &security)
+		text := fmt.Sprintf("【安全中心组件告警】\n机器 IP：%s\n主机：%s\n来源：%s\n类型：%s\n级别：%s\n时间：%s\n内容：%s", event.MachineIP, event.Host, security.Source, security.Kind, security.Severity, event.Time.UTC().Format(time.RFC3339), security.Message)
+		for _, field := range []struct{ label, value string }{{"路径", security.Path}, {"用户", security.User}, {"命令", security.Command}} {
+			if field.value != "" {
+				text += "\n" + field.label + "：" + field.value
+			}
+		}
+		return text + "\n事件 ID：" + event.EventID
+	}
 	if event.Type == "alert" {
 		var alert offlineAlert
 		if json.Unmarshal(event.Data, &alert) == nil && alert.Module == "machine" && alert.Kind == "abnormal_offline" {

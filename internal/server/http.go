@@ -54,6 +54,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings/agent-config-template", s.saveAgentConfigTemplate)
 	mux.HandleFunc("GET /api/settings/agent-config-deliveries", s.getAgentConfigDeliveries)
 	mux.HandleFunc("POST /api/settings/agent-config-deliveries", s.saveAgentConfigDeliveries)
+	mux.HandleFunc("POST /api/settings/security-profile/compose", s.composeSecurityProfile)
+	mux.HandleFunc("GET /api/settings/security-profile/defaults", s.securityProfileDefaults)
+	mux.HandleFunc("GET /api/security/status", s.securityStatus)
+	mux.HandleFunc("GET /api/security/sudo-sessions", s.sudoSessions)
+	mux.HandleFunc("GET /api/security/sudo-sessions/{id}/files/{file}", s.sudoSessionFile)
 	mux.HandleFunc("GET /api/overview", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Store.Overview(r.Context())
 		s.respond(w, v, e)

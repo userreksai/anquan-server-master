@@ -61,7 +61,23 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	heartbeatInterval := 0
 	var loginKey any
 	var commandKey any
+	securityNotify := false
+	var sudoChunk *sudoIOChunk
 	switch e.Type {
+	case "security_event":
+		severity, err := validateSecurityEvent(e.Data)
+		if err != nil {
+			return false, err
+		}
+		securityNotify = severity == "warning" || severity == "error" || severity == "critical"
+		sudoChunk, err = parseSudoIOChunk(e.Data)
+		if err != nil {
+			return false, err
+		}
+	case "component_status":
+		if err := validateComponentStatus(e.Data); err != nil {
+			return false, err
+		}
 	case "heartbeat":
 		var heartbeat struct {
 			Interval int `json:"interval_seconds"`
@@ -173,6 +189,13 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 		}
 		return true, tx.Commit()
 	}
+	if sudoChunk != nil {
+		inserted, err := storeSudoIOChunk(ctx, tx, e, ip, now, sudoChunk)
+		if err != nil {
+			return false, err
+		}
+		return inserted, tx.Commit()
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO events(event_id,machine_ip,host,type,time,received_at,data,login_key,command_key) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, e.EventID, ip, e.Host, e.Type, stamp(eventTime), now, string(e.Data), loginKey, commandKey)
 	if err != nil {
 		return false, err
@@ -184,13 +207,21 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	if n == 0 {
 		return false, tx.Commit()
 	}
+	if e.Type == "component_status" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO machine_security_status(machine_ip,host,time,received_at,data) VALUES(?,?,?,?,?)
+ON CONFLICT(machine_ip) DO UPDATE SET host=excluded.host,time=excluded.time,received_at=excluded.received_at,data=excluded.data
+WHERE excluded.time>=machine_security_status.time`, ip, e.Host, stamp(e.Time), now, string(e.Data))
+		if err != nil {
+			return false, err
+		}
+	}
 	if e.Type == "scan_summary" {
 		_, err = tx.ExecContext(ctx, `UPDATE machines SET last_summary=?,last_summary_at=?,interval_seconds=CASE WHEN ?>0 THEN ? ELSE interval_seconds END WHERE ip=? AND last_summary_at<=?`, string(e.Data), stamp(e.Time), interval, interval, ip, stamp(e.Time))
 		if err != nil {
 			return false, err
 		}
 	}
-	if e.Type == "alert" || e.Type == "ssh_login" {
+	if e.Type == "alert" || e.Type == "ssh_login" || securityNotify {
 		id, e := result.LastInsertId()
 		if e != nil {
 			return false, e
