@@ -23,9 +23,15 @@ func TestEventPolicySettingsValidateAndSurviveRestart(t *testing.T) {
 	if got := jsonResult[EventPolicy](t, response); !reflect.DeepEqual(got, defaultEventPolicy()) {
 		t.Fatalf("wrong defaults: %+v", got)
 	}
-	want := EventPolicy{TetragonIgnoredKinds: []string{"process_exec", "process_exit"}, ScanSummaryRetentionHours: 12}
+	want := EventPolicy{TetragonIgnoredKinds: []string{"process_exec", "process_exit"}, ScanSummaryRetentionHours: 12, SecurityEventMinSeverity: "error"}
 	requireStatus(t, testRequest(t, srv, "PUT", path, want, cookie, map[string]string{"Origin": "https://untrusted.example"}), 403)
 	requireStatus(t, testRequest(t, srv, "PUT", path, want, cookie, nil), 200)
+	legacy := map[string]any{"tetragon_ignored_kinds": want.TetragonIgnoredKinds, "scan_summary_retention_hours": want.ScanSummaryRetentionHours}
+	response = testRequest(t, srv, "PUT", path, legacy, cookie, nil)
+	requireStatus(t, response, 200)
+	if got := jsonResult[EventPolicy](t, response); !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy save erased minimum severity: %+v", got)
+	}
 	for _, invalid := range []any{
 		map[string]any{},
 		map[string]any{"tetragon_ignored_kinds": nil, "scan_summary_retention_hours": 12},
@@ -34,6 +40,8 @@ func TestEventPolicySettingsValidateAndSurviveRestart(t *testing.T) {
 		map[string]any{"tetragon_ignored_kinds": []string{"collector_error"}, "scan_summary_retention_hours": 24},
 		map[string]any{"tetragon_ignored_kinds": []string{"process_exec", "process_exec"}, "scan_summary_retention_hours": 24},
 		map[string]any{"tetragon_ignored_kinds": []string{}, "scan_summary_retention_hours": 12, "unknown": true},
+		map[string]any{"tetragon_ignored_kinds": []string{}, "scan_summary_retention_hours": 24, "security_event_min_severity": ""},
+		map[string]any{"tetragon_ignored_kinds": []string{}, "scan_summary_retention_hours": 24, "security_event_min_severity": "invalid"},
 	} {
 		requireStatus(t, testRequest(t, srv, "PUT", path, invalid, cookie, nil), 400)
 	}
@@ -88,7 +96,7 @@ func TestTetragonFilterPreservesPresenceHistoryAndOtherSources(t *testing.T) {
 	requireIngest(t, store, testPacket(t, "restored", "security_event", "10.0.0.1", at, tetragonPolicyData("tetragon", "process_exec")), "127.0.0.1", true)
 }
 
-func TestFilteredTetragonReportsAreAcknowledged(t *testing.T) {
+func TestFilteredSecurityReportsAreAcknowledged(t *testing.T) {
 	store, _ := testStore(t)
 	if err := store.SaveEventPolicy(context.Background(), EventPolicy{TetragonIgnoredKinds: []string{"process_exec"}, ScanSummaryRetentionHours: 24}); err != nil {
 		t.Fatal(err)
@@ -106,28 +114,30 @@ func TestFilteredTetragonReportsAreAcknowledged(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	var envelope Envelope
-	if err = json.Unmarshal(testPacket(t, "filtered-ack", "security_event", "10.0.0.2", time.Now(), tetragonPolicyData("tetragon", "process_exec")), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	envelope.AckRequested = true
-	packet, _ := json.Marshal(envelope)
-	for range 2 {
-		_ = client.SetDeadline(time.Now().Add(2 * time.Second))
-		if _, err = client.Write(packet); err != nil {
+	for name, data := range map[string]any{"tetragon": tetragonPolicyData("tetragon", "process_exec"), "below-minimum": securityData("info")} {
+		var envelope Envelope
+		if err = json.Unmarshal(testPacket(t, name+"-ack", "security_event", "10.0.0.2", time.Now(), data), &envelope); err != nil {
 			t.Fatal(err)
 		}
-		buf := make([]byte, 1024)
-		n, err := client.Read(buf)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var ack struct {
-			Type string `json:"type"`
-			ID   string `json:"event_id"`
-		}
-		if err = json.Unmarshal(buf[:n], &ack); err != nil || ack.Type != "ack" || ack.ID != envelope.EventID {
-			t.Fatalf("invalid filtered-event ACK: %s (%v)", buf[:n], err)
+		envelope.AckRequested = true
+		packet, _ := json.Marshal(envelope)
+		for range 2 {
+			_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+			if _, err = client.Write(packet); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 1024)
+			n, err := client.Read(buf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ack struct {
+				Type string `json:"type"`
+				ID   string `json:"event_id"`
+			}
+			if err = json.Unmarshal(buf[:n], &ack); err != nil || ack.Type != "ack" || ack.ID != envelope.EventID {
+				t.Fatalf("invalid filtered-event ACK: %s (%v)", buf[:n], err)
+			}
 		}
 	}
 	if countRows(t, store, "events") != 0 || countRows(t, store, "machines") != 1 {
@@ -151,7 +161,7 @@ func TestV7EventPolicyMigrationKeepsExistingData(t *testing.T) {
 	}
 	defer reopened.Close()
 	var version int
-	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
+	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
 		t.Fatalf("wrong migration version: %d %v", version, err)
 	}
 	if countRows(t, reopened, "events") != 1 || countRows(t, reopened, "outbox") != 1 {

@@ -60,9 +60,9 @@ Master 收到首条有效心跳或检测事件时，按机器 IP 自动创建记
 
 旧 Agent 仍可只发送 `scan_summary`：没有收到独立心跳的机器使用 `max(扫描周期 × 3, 120)` 秒作为离线阈值，默认扫描 300 秒对应 900 秒，避免正常巡检间隔被误判离线。收到新 Agent 的独立心跳后自动使用心跳阈值。
 
-数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=8`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 保存持续离线状态；v5 增加共享 YAML 模板；v6 增加按机器分配的加密配置、版本和应用确认状态；v7 增加安全组件事件、快照和 sudo 会话；v8 增加主控事件屏蔽与巡检保留设置。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位，主控运行后按已配置的 12/24 小时策略自动删除过期巡检记录。数据库版本与协议 `version: 1` 相互独立。
+数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=9`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 保存持续离线状态；v5 增加共享 YAML 模板；v6 增加按机器分配的加密配置、版本和应用确认状态；v7 增加安全组件事件、快照和 sudo 会话；v8 增加主控事件屏蔽与巡检保留设置；v9 增加安全运行事件最低保留级别，默认 warning。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位，主控运行后按已配置的 12/24 小时策略自动删除过期巡检记录。数据库版本与协议 `version: 1` 相互独立。
 
-主控事件策略可屏蔽指定 Tetragon 类型。匹配的新上报不写入事件表、不创建通知任务，但仍更新机器在线信息，并在事务提交后正常 ACK；Agent 可移除已确认的待发记录，不必升级 Agent 协议。其他来源同名类型不受影响。
+主控事件策略可屏蔽指定 Tetragon 类型，并为所有来源的 `security_event` 设置最低保留级别（默认 `warning`）。匹配屏蔽或低于级别的新上报不写入事件表、不创建通知任务，但仍更新机器在线信息，并在事务提交后正常 ACK；Agent 可移除已确认的待发记录，不必升级 Agent 协议。Tetragon 类型屏蔽不影响其他来源的同名类型；显式 sudo `io_chunk` 文件录制上传、SSH 登录、普通告警和操作命令不受运行事件最低级别影响。
 
 ## TCP 配置下发（55556）
 
@@ -234,9 +234,9 @@ Master v0.6.0 将新入库的 `ssh_login` 与通知任务在同一事务提交�
 
 继续使用同一 v1 Envelope、UDP 55555 和 `ack_requested`，不增加端口；所有合法的请求确认都在事务提交后发送，包括重复报文。配置继续使用现有 TCP 55556 的 age YAML 分发。
 
-`type: security_event` 的 `data` 必须包含非空 `source,kind,message` 和有效 `severity`（`debug/info/notice/warning/error/critical`），其余来源证据原样保存。普通事件按 `(machine_ip,event_id)` 幂等入库；仅 `warning/error/critical` 创建 webhook 任务。
+`type: security_event` 的 `data` 必须包含非空 `source,kind,message` 和有效 `severity`（`debug/info/notice/warning/error/critical`），其余来源证据原样保存。通过主控屏蔽和最低级别筛选的普通事件按 `(machine_ip,event_id)` 幂等入库；仅有效级别为 `warning/error/critical` 创建 webhook 任务。兼容旧 Agent：仅 `source=auditd,kind=exec,severity=warning,message="Linux audit exec"`，且 `fields.key` 或原始 `records` 明确只有内建 `key=anquan_exec` 时，按 `info` 筛选且不通知；原始载荷不变，自定义/多个 key、缺少 key 证据、自定义消息和更高级别不降级，fields 最后覆盖也不能掩盖原始记录中的自定义 key。投递前重新按当前策略判断；不再满足条件的未投递运行事件任务会取消，不删除历史、不伪造投递成功。
 
-`type: component_status` 的 `data.components` 是最多 32 个组件的数组，每项名称唯一、非空，包含 `name,enabled,installed,running,state`，可附 `message,error,version,config_hash,applied_at`；`applied_at` 使用 RFC3339 时间。附加 `queue` 等字段保持原样。状态历史进入事件表，并在同一事务维护每台机器最新快照；只有 Agent 时间不旧于现有快照才替换，状态不触发 webhook。
+`type: component_status` 的 `data.components` 是最多 32 个组件的数组，每项名称唯一、非空，包含 `name,enabled,installed,running,state`，可附 `message,error,version,config_hash,applied_at,checks`；`applied_at` 使用 RFC3339 时间。附加 `queue` 等字段保持原样。每次在同一事务维护每台机器最新快照，只有 Agent 时间不旧于现有快照才替换；正常稳定上报不进入事件历史。仅启用组件首次异常、异常状态/诊断/配置/检查证据有意义变化、及异常恢复时保留一次历史，重复异常、队列/库存变化、应用时间变化和组件/检查次序不增加历史。非空 `error` 或 `error/failed/install_failed/config_failed/degraded/unsupported/drift/stopped/missing/not_installed` 状态为异常，禁用组件与 `starting/installing/pending` 过渡状态不视为异常。旧报告不会回滚快照或制造过期历史，合法快照和重复报告仍在事务提交后正常 ACK；组件状态始终不触发 webhook。新 Agent 的正常快照可附 `status_reporting:"changes_only",snapshot_interval_seconds:300,snapshot_only:true`；这些字段仅为展示提示，主控独立判断异常，不信任 `snapshot_only` 来跳过真实异常。
 
 sudo I/O 使用 `type: security_event`、`source: sudo`、`kind: io_chunk`、`severity: info`、非空 `message`，证据放在 `data.details`：
 

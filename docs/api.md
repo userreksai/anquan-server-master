@@ -11,8 +11,8 @@
 | GET | `/api/auth/me` | `{username:"admin"}` |
 | POST | `/api/auth/logout` | 注销当前会话 |
 | PUT | `/api/auth/password` | `{current_password,new_password}`，使全部会话失效 |
-| GET | `/api/settings/event-policy` | 读取主控全局 Tetragon 屏蔽与巡检保留设置 |
-| PUT | `/api/settings/event-policy` | `{tetragon_ignored_kinds: string[],scan_summary_retention_hours: 12 或 24}`，完整替换设置 |
+| GET | `/api/settings/event-policy` | 读取主控全局安全运行事件最低级别、Tetragon 屏蔽与巡检保留设置 |
+| PUT | `/api/settings/event-policy` | `{tetragon_ignored_kinds: string[],scan_summary_retention_hours: 12 或 24,security_event_min_severity?: string}` |
 | GET | `/api/overview` | 机器/在线机器/事件/告警/待处理/登录/待投递数量 |
 | GET | `/api/machines` | `q,page,page_size` 搜索 IP、主机名、别名、备注 |
 | GET | `/api/machines/{ip}` | 单台机器 |
@@ -37,9 +37,11 @@
 
 事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 保留 Agent 上报或主控检测的证据，不接受经 HTTP 修改检测证据。
 
-事件策略接口沿用管理员登录、同源与 JSON 校验，GET 和 PUT 成功返回相同对象，默认 `{"tetragon_ignored_kinds":[],"scan_summary_retention_hours":24}`。PUT 必须同时提供两个字段，不允许 null、重复类型、未知字段或其他保留时长；失败不覆盖原设置。设置持久保存在主控数据库，重启后保留。
+事件策略接口沿用管理员登录、同源与 JSON 校验，GET 和 PUT 成功返回相同对象，默认 `{"tetragon_ignored_kinds":[],"scan_summary_retention_hours":24,"security_event_min_severity":"warning"}`。PUT 必须同时提供屏蔽列表和保留时间；新增最低级别可省略，省略时保留当前值，兼容旧前端。最低级别只能为 `debug,info,notice,warning,error,critical`，不接受空字符串；重复类型、未知字段或其他保留时长会被拒绝，失败不覆盖原设置。设置持久保存在主控数据库，重启后保留。
 
 可屏蔽的 Tetragon 类型为 `process_exec,process_exit,process_kprobe,process_tracepoint,process_loader,process_uprobe,process_lsm,process_usdt,runtime`。只过滤 `security_event` 中 `data.source=tetragon` 且 `data.kind` 匹配的未来上报，在入库前生效，不生成记录和通知任务；仍更新机器在线信息并在事务提交后 ACK，避免 Agent 重试积压。其他来源同名事件、解析错误等诊断及已有历史记录保留；清空数组可恢复记录新事件。
+
+所有来源的安全运行事件还需达到 `security_event_min_severity` 才入库，默认只保留警告及以上，减少普通 exec/sudo 等观察记录；`alert`、`ssh_login`、`command_history` 和显式 sudo `io_chunk` 录制上传不受此阈值影响。兼容旧 Agent：精确匹配 `source=auditd,kind=exec,severity=warning,message="Linux audit exec"`，且 `fields.key` 或原始 `records` 明确仅含内建 `key=anquan_exec` 的普通执行记录，按有效级别 `info` 判断入库与通知，原始数据保留不改写；任何自定义或多个审计 key（包括被 fields 合并覆盖的原始 key）、缺少 key 证据、自定义消息及 `error/critical` 均不降级。通知只发送达到当前入库阈值且有效级别至少为 `warning` 的运行事件；投递前再次检查当前策略，已屏蔽、低于阈值或匹配该旧版普通 exec 的待投递任务会取消，保留事件历史，不记成 Webhook 成功；SSH 登录任务照常。
 
 巡检保留仅针对 `scan_summary`，按事件 `time` 严格早于“当前时间减 12/24 小时”的记录清理，边界记录保留，不按 `received_at` 计算。主控启动立即清理，以后每分钟运行，每批至多 1000 条并分批处理积压；保存设置不阻塞等待全量清理。过期巡检的处理备注也随记录删除，机器 `last_summary` 和在线状态不受影响。其他事件类型及其通知队列不按此期限删除。
 
@@ -112,7 +114,7 @@ POST/PUT 均要求管理员登录、同源校验及 `application/json`。最大 
 
 沿用管理员登录、JSON、同源校验。YAML 最大 4 MiB，必须是单份键值映射；机器列表必须非空且已登记。主控加密后在一个事务中覆盖所选机器的最新分配，返回 `{items:[所选机器的状态]}`。HTTP 200 表示主控已保存；是否在节点生效须查看后续 `applied` 确认。离线或旧版 Agent 保持待下发，新版 Agent 连接后自动投递。旧版本 ACK 不会覆盖更新版本状态。共享模板的存储与下发各自独立。
 
-Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v8，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
+Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v9，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
 
 ## 安全组件表单与状态
 
@@ -187,8 +189,8 @@ security:
 
 `security.sudo.grants` 为整体替换的授权数组，最多 128 项：`{user:string,run_as?:string,commands:string[],nopasswd?:boolean}`。user/run_as 是本机账户名称，run_as 留空或省略使用 root；commands 每项为绝对命令路径，可附字面参数，每条最多 1024 字节，每个授权 1–64 条命令，拒绝 sudoers 元字符、通配符和换行；nopasswd 默认 false。例：`{user: ops, run_as: root, commands: ["/usr/bin/systemctl restart nginx.service"], nopasswd: false}`。Agent 只管理自己的 sudoers 片段，不删除其他已有的 sudo、wheel 或云镜像广泛授权；新增授权不能证明用户已经实现最小权限。未指定命令参数时也应了解该二进制允许的参数及提权能力。授权变更的实际应用仍由 Agent 策略和校验结果决定。
 
-`component_status.data.components` 每项包含 `name,enabled,installed,running,state`，可附 `message,error,version,config_hash,applied_at`；其他队列/采集进度字段原样保留。快照按 Agent `time` 更新，旧上报不会回滚新状态。配置交付 `applied` 只表示 Agent 已接受配置；安装、reload、内核能力等结果以组件状态为准。
+`component_status.data.components` 每项包含 `name,enabled,installed,running,state`，可附 `message,error,version,config_hash,applied_at,checks`；其他队列/采集进度字段原样保留。每次正常上报只维护最新快照；仅首次异常、异常组件的状态/诊断/配置/检查证据变化、或异常恢复时追加一次组件历史，同一异常重复上报不增加历史。比较忽略队列、库存、外层报告元数据、`applied_at` 及组件/检查的排列次序；已禁用组件不算异常。启用组件的非空 `error` 或 `error/failed/install_failed/config_failed/degraded/unsupported/drift/stopped/missing/not_installed` 状态算异常，`starting/installing/pending` 视为过渡状态。快照按 Agent `time` 更新，旧上报不会回滚新状态或制造历史；所有合法重复和快照报告在提交后 ACK。新 Agent 可携带 `status_reporting:"changes_only",snapshot_interval_seconds:300,snapshot_only:true` 提示，Master 始终独立判断真实异常，不能通过 `snapshot_only` 隐藏异常。配置交付 `applied` 只表示 Agent 已接受配置；安装、reload、内核能力等结果以组件状态为准。
 
-`security_event.data` 含 `source,kind,severity,message`，可附 `path,user,uid,pid,ppid,command,session_id,details` 及来源证据。接受 `debug,info,notice,warning,error,critical`；只将后三种级别入 webhook 队列，重复事件不重复通知。普通命令和组件状态不自动通知。sudo `io_chunk` 单独处理，不进入事件表与 webhook 队列。
+`security_event.data` 含 `source,kind,severity,message`，可附 `path,user,uid,pid,ppid,command,session_id,details` 及来源证据。接受 `debug,info,notice,warning,error,critical`，按上述主控事件策略筛选；只有通过筛选且有效级别为 `warning/error/critical` 才入 webhook 队列，重复事件不重复通知。普通命令和组件状态不自动通知。sudo `io_chunk` 单独处理，不进入事件表与 webhook 队列，也不受运行事件最低级别影响。
 
 sudo 会话分页结构：`{items:[{id,machine_ip,host,session_id,generation,time,received_at,files:[{name,size,received_bytes,complete}]}],total,page,page_size}`。下载 `file` 仅允许 `log,log.json,timing,stdin,stdout,stderr,ttyin,ttyout`，`id` 为数据库整数 ID。下载为原始二进制 `application/octet-stream`，保存同一会话的全部完整文件后可在支持的环境使用 `sudoreplay`。初版不提供网页回放与自动保留期限清理；删除机器级联删除会话及分片。

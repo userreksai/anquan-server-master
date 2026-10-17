@@ -266,6 +266,25 @@ func (s *Server) deliver(ctx context.Context, d delivery) error {
 	if err != nil {
 		return err
 	}
+	if event.Type == "security_event" {
+		var security struct {
+			Source, Kind, Severity, Message string
+		}
+		if err := json.Unmarshal(event.Data, &security); err != nil {
+			return err
+		}
+		policy, err := s.Store.EventPolicy(ctx)
+		if err != nil {
+			return err
+		}
+		severity := effectiveSecuritySeverity(security.Source, security.Kind, security.Severity, security.Message, event.Data)
+		if !policy.retainSecurityEvent(security.Source, security.Kind, security.Severity, security.Message, event.Data) || securitySeverityRank(severity) < securitySeverityRank("warning") {
+			// Cancel obsolete pending work without claiming receiver acceptance
+			// or changing event history and webhook last-success diagnostics.
+			_, err := s.Store.DB.ExecContext(ctx, `DELETE FROM outbox WHERE id=? AND delivered_at IS NULL`, d.ID)
+			return err
+		}
+	}
 	deliveryErr := PostEvent(ctx, s.Client, hook, event)
 	if ctx.Err() != nil {
 		return ctx.Err()
