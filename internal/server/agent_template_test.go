@@ -208,7 +208,7 @@ func TestV4MigrationAddsAgentTemplateWithoutLosingData(t *testing.T) {
 	}
 	defer reopened.Close()
 	var version int
-	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
+	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
 		t.Fatalf("migration version=%d, error=%v", version, err)
 	}
 	for _, table := range []string{"machines", "events", "webhooks", "outbox", "sessions", "users"} {

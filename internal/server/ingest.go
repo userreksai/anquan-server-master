@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"slices"
 	"strings"
 	"time"
 )
@@ -63,7 +62,7 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	var loginKey any
 	var commandKey any
 	securityNotify := false
-	var securitySource, securityKind string
+	var securitySource, securityKind, securitySeverity, securityMessage string
 	var sudoChunk *sudoIOChunk
 	switch e.Type {
 	case "security_event":
@@ -71,9 +70,12 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 		if err != nil {
 			return false, err
 		}
-		securityNotify = severity == "warning" || severity == "error" || severity == "critical"
+		securitySeverity = severity
 		_ = json.Unmarshal(object["source"], &securitySource)
 		_ = json.Unmarshal(object["kind"], &securityKind)
+		_ = json.Unmarshal(object["message"], &securityMessage)
+		effectiveSeverity := effectiveSecuritySeverity(securitySource, securityKind, severity, securityMessage, e.Data)
+		securityNotify = securitySeverityRank(effectiveSeverity) >= securitySeverityRank("warning")
 		sudoChunk, err = parseSudoIOChunk(e.Data)
 		if err != nil {
 			return false, err
@@ -193,23 +195,32 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 		}
 		return true, tx.Commit()
 	}
-	if e.Type == "security_event" && securitySource == "tetragon" {
-		policy, err := readEventPolicy(ctx, tx)
+	if e.Type == "component_status" {
+		inserted, err := storeComponentStatus(ctx, tx, e, ip, now)
 		if err != nil {
 			return false, err
 		}
-		if slices.Contains(policy.TetragonIgnoredKinds, securityKind) {
-			// A filtered report still proves contact and is ACKed after commit,
-			// but creates neither a history row nor a notification job.
-			return false, tx.Commit()
-		}
+		return inserted, tx.Commit()
 	}
 	if sudoChunk != nil {
+		// Explicit recording uploads use dedicated storage and must remain
+		// complete regardless of runtime-event severity filtering.
 		inserted, err := storeSudoIOChunk(ctx, tx, e, ip, now, sudoChunk)
 		if err != nil {
 			return false, err
 		}
 		return inserted, tx.Commit()
+	}
+	if e.Type == "security_event" {
+		policy, err := readEventPolicy(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if !policy.retainSecurityEvent(securitySource, securityKind, securitySeverity, securityMessage, e.Data) {
+			// A filtered report still proves contact and is ACKed after commit,
+			// but creates neither a history row nor a notification job.
+			return false, tx.Commit()
+		}
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO events(event_id,machine_ip,host,type,time,received_at,data,login_key,command_key) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, e.EventID, ip, e.Host, e.Type, stamp(eventTime), now, string(e.Data), loginKey, commandKey)
 	if err != nil {
@@ -221,14 +232,6 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	}
 	if n == 0 {
 		return false, tx.Commit()
-	}
-	if e.Type == "component_status" {
-		_, err = tx.ExecContext(ctx, `INSERT INTO machine_security_status(machine_ip,host,time,received_at,data) VALUES(?,?,?,?,?)
-ON CONFLICT(machine_ip) DO UPDATE SET host=excluded.host,time=excluded.time,received_at=excluded.received_at,data=excluded.data
-WHERE excluded.time>=machine_security_status.time`, ip, e.Host, stamp(e.Time), now, string(e.Data))
-		if err != nil {
-			return false, err
-		}
 	}
 	if e.Type == "scan_summary" {
 		_, err = tx.ExecContext(ctx, `UPDATE machines SET last_summary=?,last_summary_at=?,interval_seconds=CASE WHEN ?>0 THEN ? ELSE interval_seconds END WHERE ip=? AND last_summary_at<=?`, string(e.Data), stamp(e.Time), interval, interval, ip, stamp(e.Time))

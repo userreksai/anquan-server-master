@@ -25,6 +25,11 @@ func componentData(state string) map[string]any {
 func TestSecurityEventsNotificationPolicyAndStatusOrdering(t *testing.T) {
 	s, _ := testStore(t)
 	ctx := context.Background()
+	policy := defaultEventPolicy()
+	policy.SecurityEventMinSeverity = "debug"
+	if err := s.SaveEventPolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
 	at := time.Now().UTC().Truncate(time.Millisecond)
 	insertHook(t, s, "security", "http://127.0.0.1/unused", "generic", true)
 	for _, severity := range []string{"debug", "info", "notice", "warning", "error", "critical"} {
@@ -47,8 +52,8 @@ func TestSecurityEventsNotificationPolicyAndStatusOrdering(t *testing.T) {
 	if overview, err := s.Overview(ctx); err != nil || overview.OpenAlerts != 2 {
 		t.Fatalf("resolved security event remained open: %+v %v", overview, err)
 	}
-	requireIngest(t, s, testPacket(t, "new-status", "component_status", "10.0.0.1", at, componentData("running")), "127.0.0.1", true)
-	requireIngest(t, s, testPacket(t, "older-status", "component_status", "10.0.0.1", at.Add(-time.Minute), componentData("stopped")), "127.0.0.1", true)
+	requireIngest(t, s, testPacket(t, "new-status", "component_status", "10.0.0.1", at, componentData("running")), "127.0.0.1", false)
+	requireIngest(t, s, testPacket(t, "older-status", "component_status", "10.0.0.1", at.Add(-time.Minute), componentData("stopped")), "127.0.0.1", false)
 	statuses, err := s.SecurityStatuses(ctx, "10.0.0.1")
 	if err != nil || len(statuses) != 1 || !strings.Contains(string(statuses[0].Data), `"state":"running"`) {
 		t.Fatalf("snapshot rolled back: %+v %v", statuses, err)
@@ -57,6 +62,7 @@ func TestSecurityEventsNotificationPolicyAndStatusOrdering(t *testing.T) {
 	if err != nil || len(statuses) != 0 {
 		t.Fatal("machine status filter failed", err)
 	}
+	requireIngest(t, s, testPacket(t, "abnormal-status", "component_status", "10.0.0.1", at.Add(time.Minute), componentData("stopped")), "127.0.0.1", true)
 	for _, kind := range []string{"security_event", "component_status"} {
 		f, err := ParseFilter(url.Values{"type": {kind}})
 		if err != nil {
@@ -171,7 +177,7 @@ func TestSecurityAPIRequiresAuthAndSupportsComposeAndStatus(t *testing.T) {
 	requireStatus(t, testRequest(t, server, "POST", "/api/settings/security-profile/compose", map[string]any{"yaml": "server: {}\n", "security": defaults["security"]}, cookie, nil), 200)
 	requireStatus(t, testRequest(t, server, "POST", "/api/settings/security-profile/compose", map[string]any{"yaml": "server: {}\n", "security": nil}, cookie, nil), 400)
 	requireStatus(t, testRequest(t, server, "POST", "/api/settings/security-profile/compose", map[string]any{"yaml": "server: {}\n"}, cookie, nil), 200)
-	requireIngest(t, s, testPacket(t, "status", "component_status", "10.0.0.1", time.Now(), componentData("running")), "127.0.0.1", true)
+	requireIngest(t, s, testPacket(t, "status", "component_status", "10.0.0.1", time.Now(), componentData("running")), "127.0.0.1", false)
 	requireStatus(t, testRequest(t, server, "GET", "/api/security/status?machine_ip=bad", nil, cookie, nil), 400)
 	response = testRequest(t, server, "GET", "/api/security/status?machine_ip=10.0.0.1", nil, cookie, nil)
 	requireStatus(t, response, 200)

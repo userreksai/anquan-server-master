@@ -110,7 +110,7 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion > 8 {
+	if schemaVersion > 9 {
 		return fmt.Errorf("unsupported database schema version %d", schemaVersion)
 	}
 	_, err = tx.Exec(`
@@ -205,6 +205,20 @@ PRAGMA user_version=6;`); err != nil {
 );
 CREATE INDEX IF NOT EXISTS outbox_event_id ON outbox(event_id);
 PRAGMA user_version=8;`); err != nil {
+			return err
+		}
+	}
+	if schemaVersion < 9 {
+		var present int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('event_policy') WHERE name='security_event_min_severity'`).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err = tx.Exec(`ALTER TABLE event_policy ADD COLUMN security_event_min_severity TEXT NOT NULL DEFAULT 'warning';`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(`PRAGMA user_version=9;`); err != nil {
 			return err
 		}
 	}
