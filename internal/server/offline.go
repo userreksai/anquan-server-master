@@ -135,6 +135,6 @@ func offlineNotificationText(event Event, alert offlineAlert) string {
 	if alert.Alias != "" {
 		text += "\n机器别名：" + alert.Alias
 	}
-	return text + fmt.Sprintf("\n状态：异常离线\n最后上报时间（UTC）：%s\n离线判定时间（UTC）：%s\n超时阈值：%d 秒\n说明：本次持续离线仅通知一次，恢复在线后再次离线会重新通知。\n事件编号：%s",
-		alert.LastSeen.UTC().Format("2006-01-02 15:04:05"), alert.OfflineSince.UTC().Format("2006-01-02 15:04:05"), alert.OfflineAfterSeconds, event.EventID)
+	return text + fmt.Sprintf("\n状态：异常离线\n最后上报时间（北京时间 UTC+8）：%s\n离线判定时间（北京时间 UTC+8）：%s\n超时阈值：%d 秒\n说明：本次持续离线仅通知一次，恢复在线后再次离线会重新通知。\n事件编号：%s",
+		beijingNotificationTime(alert.LastSeen), beijingNotificationTime(alert.OfflineSince), alert.OfflineAfterSeconds, event.EventID)
 }

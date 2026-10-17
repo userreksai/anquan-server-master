@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 )
@@ -62,6 +63,7 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 	var loginKey any
 	var commandKey any
 	securityNotify := false
+	var securitySource, securityKind string
 	var sudoChunk *sudoIOChunk
 	switch e.Type {
 	case "security_event":
@@ -70,6 +72,8 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 			return false, err
 		}
 		securityNotify = severity == "warning" || severity == "error" || severity == "critical"
+		_ = json.Unmarshal(object["source"], &securitySource)
+		_ = json.Unmarshal(object["kind"], &securityKind)
 		sudoChunk, err = parseSudoIOChunk(e.Data)
 		if err != nil {
 			return false, err
@@ -188,6 +192,17 @@ func (s *Store) Ingest(ctx context.Context, packet []byte, source string) (bool,
 			return false, err
 		}
 		return true, tx.Commit()
+	}
+	if e.Type == "security_event" && securitySource == "tetragon" {
+		policy, err := readEventPolicy(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if slices.Contains(policy.TetragonIgnoredKinds, securityKind) {
+			// A filtered report still proves contact and is ACKed after commit,
+			// but creates neither a history row nor a notification job.
+			return false, tx.Commit()
+		}
 	}
 	if sudoChunk != nil {
 		inserted, err := storeSudoIOChunk(ctx, tx, e, ip, now, sudoChunk)

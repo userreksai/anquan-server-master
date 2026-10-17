@@ -11,6 +11,8 @@
 | GET | `/api/auth/me` | `{username:"admin"}` |
 | POST | `/api/auth/logout` | 注销当前会话 |
 | PUT | `/api/auth/password` | `{current_password,new_password}`，使全部会话失效 |
+| GET | `/api/settings/event-policy` | 读取主控全局 Tetragon 屏蔽与巡检保留设置 |
+| PUT | `/api/settings/event-policy` | `{tetragon_ignored_kinds: string[],scan_summary_retention_hours: 12 或 24}`，完整替换设置 |
 | GET | `/api/overview` | 机器/在线机器/事件/告警/待处理/登录/待投递数量 |
 | GET | `/api/machines` | `q,page,page_size` 搜索 IP、主机名、别名、备注 |
 | GET | `/api/machines/{ip}` | 单台机器 |
@@ -34,6 +36,12 @@
 新版 Agent 自动报告连接配置主控的本机出口 IP，主控以规范化后的报告地址作为 `ip` 和配置下发机器标识，保存为 `reported_ip`。`source_ip` 独立记录主控看到的 TCP/UDP 对端，经中转时可为代理地址；`host` 只是 Agent 主机名，不用于推导 IP。不同报告 IP 经同一中转时分别建立机器记录，旧聚合记录不自动迁移。旧发现模式和缺少报告 IP 的旧 UDP 报文保持原有来源地址语义，详见 Agent 协议。
 
 事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 保留 Agent 上报或主控检测的证据，不接受经 HTTP 修改检测证据。
+
+事件策略接口沿用管理员登录、同源与 JSON 校验，GET 和 PUT 成功返回相同对象，默认 `{"tetragon_ignored_kinds":[],"scan_summary_retention_hours":24}`。PUT 必须同时提供两个字段，不允许 null、重复类型、未知字段或其他保留时长；失败不覆盖原设置。设置持久保存在主控数据库，重启后保留。
+
+可屏蔽的 Tetragon 类型为 `process_exec,process_exit,process_kprobe,process_tracepoint,process_loader,process_uprobe,process_lsm,process_usdt,runtime`。只过滤 `security_event` 中 `data.source=tetragon` 且 `data.kind` 匹配的未来上报，在入库前生效，不生成记录和通知任务；仍更新机器在线信息并在事务提交后 ACK，避免 Agent 重试积压。其他来源同名事件、解析错误等诊断及已有历史记录保留；清空数组可恢复记录新事件。
+
+巡检保留仅针对 `scan_summary`，按事件 `time` 严格早于“当前时间减 12/24 小时”的记录清理，边界记录保留，不按 `received_at` 计算。主控启动立即清理，以后每分钟运行，每批至多 1000 条并分批处理积压；保存设置不阻塞等待全量清理。过期巡检的处理备注也随记录删除，机器 `last_summary` 和在线状态不受影响。其他事件类型及其通知队列不按此期限删除。
 
 主控每秒检测机器离线，生成 `type: alert`、`data.module: machine`、`data.kind: abnormal_offline` 的事件。`data` 包含 `target`（机器 IP）、中文 `message`、可选 `alias`、`last_seen`、`offline_since`、`detected_at` 和 `offline_after_seconds`。外层 `time` 为离线阈值到达时间，`received_at` 为检测时间。每次持续离线仅生成一次，重启及删除事件不重置；有效上报恢复在线后，下次离线才创建新事件。所有启用地址各入队一次，失败持久重试；持续离线期间后来启用的地址会补充尚未存在的任务。
 
@@ -59,20 +67,22 @@ Webhook 字段：`id,name,url,format,enabled,created_at,updated_at,last_error,la
 
 Lark/飞书即使 HTTP 200，业务码非零、缺失或无效仍返回 `success:false`、HTTP 502；企业微信要求 `errcode=0`。`generic` 检测到 `code/StatusCode/errcode` 时同样要求数值 0；没有业务码时 HTTP 2xx 表示请求已接受，`message` 会说明无法确认业务接收。前端应显示实际消息和响应信息，不应仅凭 HTTP 200 或缺少响应字段回退为“发送成功”。完整 URL 和原始接收端响应不包含在诊断中。
 
-自动通知正文示例（`before/after` 有值时才追加，时间为 UTC）：
+自动通知正文示例（`before/after` 有值时才追加，时间固定为北京时间 UTC+8）：
 
 ```text
 【安全中心告警】
 机器 IP：10.20.30.40
 主机：node-a
-类型：files / modified
+类型：文件监控（files） / 修改（modified）
 目标：/etc/app.conf
-时间：2026-10-06T08:00:00Z
-内容：monitored file modified
+时间（北京时间 UTC+8）：2026-10-06 16:00:00
+内容：监控文件已修改
 变更前：900150983cd24fb0d6963f7d28e17f72
 变更后：d41d8cd98f00b204e9800998ecf8427e
 事件 ID：alert-example
 ```
+
+组件告警的来源、类型和级别使用中文标签并保留协议标识，例如“系统策略（policies）”“策略合规检查（policy_check）”“警告（warning）”。已知 Agent 固定英文消息在通知正文中显示为中文，例如 `Host policy compliance checked` 显示为“已完成主机策略合规检查”；自定义消息和未知诊断原样保留。普通告警、组件告警、SSH 登录和机器离线通知的正文时间均固定转换为北京时间 UTC+8，不依赖主控系统时区；API 原始事件时间和 `data` 不受通知展示转换影响。
 
 新入库的 `alert` 和 `ssh_login` 发往当时已启用的配置，事件与通知队列在同一事务提交。数据库已有记录不补发，重复上报不重复入队；延迟/补读登录首次入库时仍会通知，时间取真实 `login_time`。普通命令、巡检摘要和心跳不发送。测试成功不创建配置，草稿测试后仍需保存才能接收后续通知。
 
@@ -102,7 +112,7 @@ POST/PUT 均要求管理员登录、同源校验及 `application/json`。最大 
 
 沿用管理员登录、JSON、同源校验。YAML 最大 4 MiB，必须是单份键值映射；机器列表必须非空且已登记。主控加密后在一个事务中覆盖所选机器的最新分配，返回 `{items:[所选机器的状态]}`。HTTP 200 表示主控已保存；是否在节点生效须查看后续 `applied` 确认。离线或旧版 Agent 保持待下发，新版 Agent 连接后自动投递。旧版本 ACK 不会覆盖更新版本状态。共享模板的存储与下发各自独立。
 
-Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v7，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
+Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v8，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
 
 ## 安全组件表单与状态
 
