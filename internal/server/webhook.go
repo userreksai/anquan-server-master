@@ -34,7 +34,7 @@ func AlertText(event Event) string {
 		After   string `json:"after"`
 	}
 	_ = json.Unmarshal(event.Data, &alert)
-	text := fmt.Sprintf("【安全中心告警】\n机器 IP：%s\n主机：%s\n类型：%s / %s\n目标：%s\n时间：%s\n内容：%s", event.MachineIP, event.Host, alert.Module, alert.Kind, alert.Target, event.Time.UTC().Format(time.RFC3339), alert.Message)
+	text := fmt.Sprintf("【安全中心告警】\n机器 IP：%s\n主机：%s\n类型：%s / %s\n目标：%s\n时间（北京时间 UTC+8）：%s\n内容：%s", event.MachineIP, event.Host, alertNotificationModule(alert.Module), alertNotificationKind(alert.Kind), alert.Target, beijingNotificationTime(event.Time), alertNotificationMessage(alert.Module, alert.Kind, alert.Message, alert.Before, alert.After))
 	if alert.Before != "" {
 		text += "\n变更前：" + alert.Before
 	}
@@ -56,7 +56,7 @@ func NotificationText(event Event) string {
 			Command  string `json:"command"`
 		}
 		_ = json.Unmarshal(event.Data, &security)
-		text := fmt.Sprintf("【安全中心组件告警】\n机器 IP：%s\n主机：%s\n来源：%s\n类型：%s\n级别：%s\n时间：%s\n内容：%s", event.MachineIP, event.Host, security.Source, security.Kind, security.Severity, event.Time.UTC().Format(time.RFC3339), security.Message)
+		text := fmt.Sprintf("【安全中心组件告警】\n机器 IP：%s\n主机：%s\n来源：%s\n类型：%s\n级别：%s\n时间（北京时间 UTC+8）：%s\n内容：%s", event.MachineIP, event.Host, securitySourceLabel(security.Source), securityKindLabel(security.Kind), securitySeverityLabel(security.Severity), beijingNotificationTime(event.Time), securityNotificationMessage(security.Source, security.Kind, security.Message))
 		for _, field := range []struct{ label, value string }{{"路径", security.Path}, {"用户", security.User}, {"命令", security.Command}} {
 			if field.value != "" {
 				text += "\n" + field.label + "：" + field.value
@@ -85,7 +85,7 @@ func NotificationText(event Event) string {
 			*value = "N/A"
 		}
 	}
-	return fmt.Sprintf("【安全中心 SSH 登录通知】\n机器 IP：%s\n主机：%s\n类型：ssh_login\n登录用户：%s\n登录来源 IP：%s\n终端：%s\n登录方式：%s\n登录时间（北京时间 UTC+8）：%s\n事件 ID：%s", event.MachineIP, event.Host, login.User, login.SourceIP, login.Terminal, login.Method, event.Time.In(beijingTimeZone).Format("2006-01-02 15:04:05"), event.EventID)
+	return fmt.Sprintf("【安全中心 SSH 登录通知】\n机器 IP：%s\n主机：%s\n类型：ssh_login\n登录用户：%s\n登录来源 IP：%s\n终端：%s\n登录方式：%s\n登录时间（北京时间 UTC+8）：%s\n事件 ID：%s", event.MachineIP, event.Host, login.User, login.SourceIP, login.Terminal, login.Method, beijingNotificationTime(event.Time), event.EventID)
 }
 
 // WebhookResult exposes the actual outgoing text and safe delivery diagnostics.

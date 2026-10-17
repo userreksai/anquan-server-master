@@ -105,6 +105,8 @@ func run(args []string) error {
 	go func() { defer close(notifyDone); srv.RunNotifier(ctx) }()
 	offlineDone := make(chan struct{})
 	go func() { defer close(offlineDone); srv.RunOfflineMonitor(ctx) }()
+	retentionDone := make(chan struct{})
+	go func() { defer close(retentionDone); srv.RunEventRetention(ctx) }()
 	slog.Info("安全中心主控已启动", "http", listener.Addr().String(), "udp", udpConn.LocalAddr().String(), "tcp", tcpListener.Addr().String(), "database", filepath.Join(*dataDir, "anquan.db"))
 	select {
 	case <-ctx.Done():
@@ -122,6 +124,7 @@ func run(args []string) error {
 	}
 	<-notifyDone
 	<-offlineDone
+	<-retentionDone
 	<-tcpDone
 	return err
 }

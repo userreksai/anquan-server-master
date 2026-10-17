@@ -56,6 +56,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/agent-config-deliveries", s.saveAgentConfigDeliveries)
 	mux.HandleFunc("POST /api/settings/security-profile/compose", s.composeSecurityProfile)
 	mux.HandleFunc("GET /api/settings/security-profile/defaults", s.securityProfileDefaults)
+	mux.HandleFunc("GET /api/settings/event-policy", s.getEventPolicy)
+	mux.HandleFunc("PUT /api/settings/event-policy", s.saveEventPolicy)
 	mux.HandleFunc("GET /api/security/status", s.securityStatus)
 	mux.HandleFunc("GET /api/security/sudo-sessions", s.sudoSessions)
 	mux.HandleFunc("GET /api/security/sudo-sessions/{id}/files/{file}", s.sudoSessionFile)

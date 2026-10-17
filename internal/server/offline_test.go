@@ -188,7 +188,7 @@ func TestOfflineChineseNotificationsRetryAfterRestart(t *testing.T) {
 		case "/generic":
 			_ = json.Unmarshal(request.Body["text"], &text)
 		}
-		for _, want := range []string{"【安全中心：机器异常离线】", "机器 IP：10.0.0.1", "主机名：node-a", "机器别名：生产节点", "状态：异常离线", "最后上报时间（UTC）：", "离线判定时间（UTC）：", "超时阈值：90 秒", "本次持续离线仅通知一次", "事件编号："} {
+		for _, want := range []string{"【安全中心：机器异常离线】", "机器 IP：10.0.0.1", "主机名：node-a", "机器别名：生产节点", "状态：异常离线", "最后上报时间（北京时间 UTC+8）：", "离线判定时间（北京时间 UTC+8）：", "超时阈值：90 秒", "本次持续离线仅通知一次", "事件编号："} {
 			if !strings.Contains(text, want) {
 				t.Errorf("missing Chinese notification field %q: %s", want, text)
 			}
@@ -263,7 +263,7 @@ func TestV3MigrationPreservesDataAndDetectsExistingOfflineMachine(t *testing.T) 
 	}
 	defer s.Close()
 	var version int
-	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 7 {
+	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
 		t.Fatal("v3 database not upgraded", err)
 	}
 	requireOffline(t, s, now, 1)
