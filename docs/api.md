@@ -18,7 +18,7 @@
 | GET | `/api/machines/{ip}` | 单台机器 |
 | PATCH | `/api/machines/{ip}` | `{alias?,notes?}` |
 | DELETE | `/api/machines/{ip}` | 删除机器、其记录及通知队列 |
-| GET | `/api/events` | `machine_ip,q,type,status,from,to,page,page_size` |
+| GET | `/api/events` | `machine_ip,q,type,status,from,to,page,page_size,order` |
 | GET | `/api/events/{id}` | 单条事件（整数数据库 ID） |
 | PATCH | `/api/events/{id}` | `{status?,notes?}`，状态为 open/resolved |
 | DELETE | `/api/events/{id}` | 删除记录与其通知队列 |
@@ -29,13 +29,13 @@
 | POST | `/api/webhooks/{id}/test` | 测试已保存配置；空请求体或 `{message?}`；发送失败 502 |
 | POST | `/api/webhooks/test` | 测试当前表单 `{url,name?,format?,enabled?,message?}`，不保存；发送失败 502 |
 
-`type` 为 `alert`、`ssh_login`、`command_history`、`scan_summary`、`security_event`、`component_status`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。按事件发生时间倒序、整数 ID 倒序稳定分页；登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
+`type` 为 `alert`、`ssh_login`、`command_history`、`scan_summary`、`security_event`、`component_status`，为空表示全部；`q` 按字面文本搜索机器 IP、主机名、data 和备注，`%` / `_` 不当作通配符。`machine_ip` 为完整 IP；URL 路径里的 IPv6 应编码。`from` 和 `to` 为包含边界的 ISO8601（必须带时区），开始不得晚于结束。`order` 可省略，默认 `desc`：先按事件发生时间倒序，同一时间再按整数 ID 倒序；`order=asc` 将两项都改为正序，在分页前排序。`order` 只接受单个小写 `asc` 或 `desc`，空值、其他值及重复参数返回 400。例如 `/api/events?type=command_history&order=asc` 可按发生时间正序查看命令；命令时间取 `data.command_time`，登录事件采用 `data.login_time`。发生新事件时使用偏移分页的不同页之间仍可能移动，刷新可查看最新记录。
 
 机器字段：`ip,host,source_ip,reported_ip,alias,notes,first_seen,last_seen,last_event_at,last_summary,interval_seconds,heartbeat_interval_seconds,event_count,alert_count,open_alert_count,login_count,online,status,offline_after_seconds`。`status` 为 `online` / `abnormal_offline`，`offline_after_seconds` 给出当前机器的离线阈值。机器由首次心跳/事件自动建立，后续上报自动恢复在线；心跳不增加事件数量。
 
 新版 Agent 自动报告连接配置主控的本机出口 IP，主控以规范化后的报告地址作为 `ip` 和配置下发机器标识，保存为 `reported_ip`。`source_ip` 独立记录主控看到的 TCP/UDP 对端，经中转时可为代理地址；`host` 只是 Agent 主机名，不用于推导 IP。不同报告 IP 经同一中转时分别建立机器记录，旧聚合记录不自动迁移。旧发现模式和缺少报告 IP 的旧 UDP 报文保持原有来源地址语义，详见 Agent 协议。
 
-事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 保留 Agent 上报或主控检测的证据，不接受经 HTTP 修改检测证据。
+事件字段：`id,event_id,machine_ip,host,type,time,received_at,status,notes,data`。`data` 保留 Agent 上报或主控检测的证据，不接受经 HTTP 修改检测证据。`PATCH /api/events/{id}` 可只提交 `{notes:"备注"}`，省略 `status` 会保留保存时的当前状态；`notes` 为空字符串可清空备注。
 
 事件策略接口沿用管理员登录、同源与 JSON 校验，GET 和 PUT 成功返回相同对象，默认 `{"tetragon_ignored_kinds":[],"scan_summary_retention_hours":24,"security_event_min_severity":"warning"}`。PUT 必须同时提供屏蔽列表和保留时间；新增最低级别可省略，省略时保留当前值，兼容旧前端。最低级别只能为 `debug,info,notice,warning,error,critical`，不接受空字符串；重复类型、未知字段或其他保留时长会被拒绝，失败不覆盖原设置。设置持久保存在主控数据库，重启后保留。
 

@@ -17,12 +17,13 @@ type Filter struct {
 	MachineIP string
 	Type      string
 	Status    string
+	Order     string
 	From      *time.Time
 	To        *time.Time
 }
 
 func ParseFilter(values url.Values) (Filter, error) {
-	f := Filter{Page: 1, Size: 20, Query: strings.TrimSpace(values.Get("q")), MachineIP: values.Get("machine_ip"), Type: values.Get("type"), Status: values.Get("status")}
+	f := Filter{Page: 1, Size: 20, Query: strings.TrimSpace(values.Get("q")), MachineIP: values.Get("machine_ip"), Type: values.Get("type"), Status: values.Get("status"), Order: "desc"}
 	for _, field := range []struct {
 		name   string
 		target *int
@@ -38,6 +39,12 @@ func ParseFilter(values url.Values) (Filter, error) {
 			}
 			*field.target = n
 		}
+	}
+	if order, ok := values["order"]; ok {
+		if len(order) != 1 || (order[0] != "asc" && order[0] != "desc") {
+			return f, fmt.Errorf("order 必须为单个 asc 或 desc")
+		}
+		f.Order = order[0]
 	}
 	if len(f.Query) > 256 {
 		return f, fmt.Errorf("搜索内容过长")
@@ -169,6 +176,14 @@ func scanEvent(row scanner) (Event, error) {
 
 func (s *Store) Events(ctx context.Context, f Filter) (Page[Event], error) {
 	page := Page[Event]{Items: []Event{}, Page: f.Page, PageSize: f.Size}
+	direction := "DESC"
+	switch f.Order {
+	case "", "desc": // Preserve the default for existing Store callers.
+	case "asc":
+		direction = "ASC"
+	default:
+		return page, fmt.Errorf("order 必须为 asc 或 desc")
+	}
 	where := []string{}
 	args := []any{}
 	for _, filter := range []struct{ key, value string }{{"machine_ip", f.MachineIP}, {"type", f.Type}, {"status", f.Status}} {
@@ -198,7 +213,7 @@ func (s *Store) Events(ctx context.Context, f Filter) (Page[Event], error) {
 		return page, err
 	}
 	args = append(args, f.Size, (f.Page-1)*f.Size)
-	rows, err := s.DB.QueryContext(ctx, eventSelect+clause+` ORDER BY time DESC,id DESC LIMIT ? OFFSET ?`, args...)
+	rows, err := s.DB.QueryContext(ctx, eventSelect+clause+` ORDER BY time `+direction+`,id `+direction+` LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return page, err
 	}
