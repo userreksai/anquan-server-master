@@ -14,6 +14,6 @@ COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod 0755 /app/reset-admin-password.sh /app/docker-entrypoint.sh
 ENV ANQUAN_BIN=/app/anquan-master ANQUAN_DATA_DIR=/data/anquan
 VOLUME /data/anquan
-EXPOSE 10110/tcp 55555/udp
+EXPOSE 10110/tcp 55555/udp 55556/tcp
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/anquan-master"]

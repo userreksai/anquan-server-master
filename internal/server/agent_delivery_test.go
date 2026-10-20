@@ -379,7 +379,7 @@ func TestV5MigrationAddsConfigAssignmentsWithoutLosingData(t *testing.T) {
 	}
 	defer reopened.Close()
 	var version int
-	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
 		t.Fatalf("migration version=%d err=%v", version, err)
 	}
 	if countRows(t, reopened, "machines") != 1 || countRows(t, reopened, "events") != 1 || countRows(t, reopened, "agent_config_deliveries") != 0 {

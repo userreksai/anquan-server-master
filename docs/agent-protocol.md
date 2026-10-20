@@ -60,7 +60,7 @@ Master 收到首条有效心跳或检测事件时，按机器 IP 自动创建记
 
 旧 Agent 仍可只发送 `scan_summary`：没有收到独立心跳的机器使用 `max(扫描周期 × 3, 120)` 秒作为离线阈值，默认扫描 300 秒对应 900 秒，避免正常巡检间隔被误判离线。收到新 Agent 的独立心跳后自动使用心跳阈值。
 
-数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=9`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 保存持续离线状态；v5 增加共享 YAML 模板；v6 增加按机器分配的加密配置、版本和应用确认状态；v7 增加安全组件事件、快照和 sudo 会话；v8 增加主控事件屏蔽与巡检保留设置；v9 增加安全运行事件最低保留级别，默认 warning。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位，主控运行后按已配置的 12/24 小时策略自动删除过期巡检记录。数据库版本与协议 `version: 1` 相互独立。
+数据库初始化或打开旧库时，Master 自动迁移 SQLite schema 到 `PRAGMA user_version=10`。v2 增加机器心跳字段；v3 扩展事件类型及命令来源 ID 去重索引；v4 保存持续离线状态；v5 增加共享 YAML 模板；v6 增加按机器分配的加密配置、版本和应用确认状态；v7 增加安全组件事件、快照和 sudo 会话；v8 增加主控事件屏蔽与巡检保留设置；v9 增加安全运行事件最低保留级别，默认 warning；v10 保存软件下载窗口时长与允许源列表，开启状态及令牌不落盘。迁移保留机器信息、事件 ID、处理状态/备注、管理员密码、登录会话、webhook 配置及通知队列的重试记录和 ID 高水位，主控运行后按已配置的 12/24 小时策略自动删除过期巡检记录。数据库版本与协议 `version: 1` 相互独立。
 
 主控事件策略可屏蔽指定 Tetragon 类型，并为所有来源的 `security_event` 设置最低保留级别（默认 `warning`）。匹配屏蔽或低于级别的新上报不写入事件表、不创建通知任务，但仍更新机器在线信息，并在事务提交后正常 ACK；Agent 可移除已确认的待发记录，不必升级 Agent 协议。Tetragon 类型屏蔽不影响其他来源的同名类型；显式 sudo `io_chunk` 文件录制上传、SSH 登录、普通告警和操作命令不受运行事件最低级别影响。
 
@@ -110,6 +110,39 @@ Agent 每 30 秒发送 `{"version":1,"type":"ping"}`，主控回复 `{"version":
 
 此通道沿用内网机器 IP 信任方式，没有单独的节点认证或 TLS；age 密文用于配置加密，不构成 Master 身份认证。仅允许可信 Agent 网络访问 55556/TCP。既有 UDP、HTTP 与 Webhook 的传输行为保持原有协议。
 
+
+## 软件包下载中继（复用 TCP 55556）
+
+支持中继的 Agent 在 `hello` 中增加 `"download_relay":true`，Master 在 `identity` 中增加 `"download_token":"<64位随机hex>"`。旧 Agent 不带此能力字段时保持原有握手。控制凭证只存在于当前配置连接的内存，连接重建后更换；不得记录到日志、配置或缓存。
+
+下载使用独立短连接的首帧分流，与配置推送和 ping/pong 分开，不阻塞配置长连接。所有 JSON 帧以换行结束，均携带 `version:1`；失败响应为 `{"version":1,"type":"error","error":"简短原因"}`，随后关闭。
+
+```json
+{"version":1,"type":"package_session","ip":"172.22.0.11","token":"<identity.download_token>"}
+{"version":1,"type":"package_session","token":"<leaseToken>","expires_at":"2026-10-20T09:00:00Z"}
+```
+
+只有主控临时下载窗口启用、机器已有管理员分配的非空配置、控制连接仍为该 IP 当前连接、凭证及 TCP 来源地址都匹配时才签发会话。会话凭证随机 32 字节，最多 10 分钟并受全局窗口截止约束。创建新会话会关闭同一配置连接之前的会话；响应后关闭短连接。
+
+每条 HTTP 或 HTTPS 连接另建 TCP 55556 连接，首帧为：
+
+```json
+{"version":1,"type":"package_relay","ip":"172.22.0.11","token":"<leaseToken>","target":"archive.ubuntu.com:443"}
+{"version":1,"type":"package_ready"}
+```
+
+Master 校验会话、来源和目标后连接公网源，返回 `package_ready` 后双向透传原始字节。接收方必须保留 JSON 读取器已缓冲的字节。目标必须是允许的完整域名加 80/443，不接受 IP 字面量、凭证 URL 或其他端口；所有 DNS 地址必须通过公网检查，实际拨号使用已验证 IP。重定向目的源需分别在允许列表内。不会依赖 `HTTP_PROXY/HTTPS_PROXY` 环境变量。
+
+安装完成后用另一条短连接发送关闭请求：
+
+```json
+{"version":1,"type":"package_close","ip":"172.22.0.11","token":"<leaseToken>"}
+{"version":1,"type":"package_closed"}
+```
+
+关闭会话立即断开其全部下载流。管理员关闭、窗口或会话过期、配置重新下发、控制连接断开/替换同样撤销会话。全局管理见 [API](api.md#主控软件下载管理)。无需新增 55557，沿用仅允许可信 Agent 网络访问 55556 的部署要求。
+
+配置应用失败的 ACK `error` 可含包管理器诊断，Master 将超过 4096 字节的错误按 UTF-8 边界截断并保存为 `failed`，不会仅因错误超过该显示长度而丢弃整个 ACK。Agent 仍需限制 ACK 帧大小。
 
 ## 扫描摘要
 
