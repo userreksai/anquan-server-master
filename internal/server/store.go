@@ -18,7 +18,10 @@ import (
 
 const DefaultPassword = "admin1818."
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB      *sql.DB
+	DataDir string
+}
 
 func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -32,7 +35,11 @@ func Open(dataDir string) (*Store, error) {
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
-	return openDatabase(path, true)
+	store, err := openDatabase(path, true)
+	if store != nil {
+		store.DataDir = dataDir
+	}
+	return store, err
 }
 
 // OpenExisting opens an initialized master database without creating a file or
@@ -61,7 +68,11 @@ func OpenExisting(dataDir string) (*Store, error) {
 		uriPath = "/" + uriPath // file:///C:/... on Windows, never file://C:/...
 	}
 	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=rw"}).String()
-	return openDatabase(dsn, false)
+	store, err := openDatabase(dsn, false)
+	if store != nil {
+		store.DataDir = dataDir
+	}
+	return store, err
 }
 
 func openDatabase(dsn string, migrate bool) (*Store, error) {
@@ -110,7 +121,7 @@ func (s *Store) migrate() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion > 10 {
+	if schemaVersion > 11 {
 		return fmt.Errorf("unsupported database schema version %d", schemaVersion)
 	}
 	_, err = tx.Exec(`
@@ -228,6 +239,20 @@ PRAGMA user_version=8;`); err != nil {
  allowed_hosts TEXT NOT NULL
 );
 PRAGMA user_version=10;`); err != nil {
+			return err
+		}
+	}
+	if schemaVersion < 11 {
+		if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS agent_update_state (
+ id INTEGER PRIMARY KEY CHECK(id=1), signing_key BLOB NOT NULL, release_json TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS agent_update_jobs (
+ machine_ip TEXT PRIMARY KEY REFERENCES machines(ip) ON DELETE CASCADE,
+ job_id TEXT NOT NULL UNIQUE, release_json TEXT NOT NULL, token TEXT NOT NULL, previous_version TEXT NOT NULL,
+ expires_at INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','downloading','restarting','applied','failed','rolled_back')),
+ error TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL, completed_at INTEGER
+);
+PRAGMA user_version=11;`); err != nil {
 			return err
 		}
 	}

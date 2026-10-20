@@ -1,5 +1,21 @@
 # HTTP API
 
+## Agent 远程更新
+
+以下接口均要求管理员登录及同源校验。Master 默认发布目录 `/usr/local/anquan-agent/dist`，可设置 `ANQUAN_AGENT_DIST_DIR`；只从固定目录读取，不接受客户端文件路径、下载 URL 或任意命令。
+
+| 方法 | 路径 | 请求与响应 |
+|---|---|---|
+| GET | `/api/settings/agent-updates` | 返回当前发布源、已打包版本与机器任务 |
+| POST | `/api/settings/agent-updates/package` | 空 body 或 `{}`；校验 `anquan` + `anquan.update.json` 后打包，返回同 GET |
+| POST | `/api/settings/agent-updates` | `{machine_ips:["172.22.0.11"],release_sha256:"已确认的压缩包摘要"}`；全批次校验后提交任务，返回同 GET |
+
+响应：`{source_dir,release:null|{version,goos,goarch,sha256,size,binary_sha256,binary_size,created_at},source_error,items:[{machine_ip,host,alias,connected,supported,agent_version,goos,goarch,job_id,target_version,status,error,updated_at,completed_at}]}`。摘要为小写十六进制 SHA-256；size 是压缩包大小，binary_size 是二进制大小，单位字节。status 为 `idle/pending/downloading/restarting/applied/failed/rolled_back`；未有任务时相关字符串为空，时间为 null。
+
+只允许在线且声明更新能力、正式三段版本号、目标版本严格更高、同 Linux/amd64 或 Linux/arm64 平台。旧 Agent 0.7.2 及更早须先手动升级。请求绑定具体已打包摘要；有任何离线、不兼容、版本不符、进行中任务或发布包变化时返回 400，整个批次不提交。准备新版本不会替换有效旧任务使用的快照。任务默认 10 分钟，重启中的任务仅在新程序报告匹配任务、平台、版本和二进制 SHA 后确认成功；不将 socket 写入成功或 `update_status: applied` 当作安装成功。
+
+更新下载通过原 TCP 55556，仅提供明确分配的本地快照，与公网组件代理开关独立。发布二进制上限 256 MiB、压缩包上限 128 MiB；不跟随发布文件符号链接，不执行待发布二进制。签名密钥及任务写 SQLite schema v11，快照保存在主控数据目录 `agent-updates/`。备份/回退需保留数据与签名身份。
+
 基址：`http://主控IP:10110`。生产浏览器使用前端同源 `/api` 代理。除登录、健康检查外均须登录 Cookie；JSON 写请求使用 `Content-Type: application/json`。默认带 `Origin` 的写请求必须匹配 HTTP `Host`，反向代理需保留原始 Host（包括端口）。设置 `ANQUAN_PUBLIC_ORIGIN` 或 `--public-origin` 后，只接受该明确来源的协议、主机名和端口，不信任代理转发头；跨站请求仍拒绝。本机 Nginx 可将 `/api/` 直接转发到 `127.0.0.1:10110`，模板保存直接写主控本机 SQLite。
 
 错误统一 `{ "message": "错误原因" }`，未登录为 401，非法参数 400，记录不存在 404。所有返回时间均为带时区 ISO8601。机器和事件列表返回 `{items: [], total: 0, page: 1, page_size: 20}`，页大小 1–100。webhook 列表返回数组。

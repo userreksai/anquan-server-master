@@ -6,7 +6,7 @@
 
 加密接口使用代码内置的 age X25519 公钥和 ASCII armor，不保存或记录本次加密的配置明文、密文，不提供解密接口。页面不传入也不显示任何密钥。无需公钥环境变量，传入自定义 recipient 会被拒绝。管理页面生产部署请使用 HTTPS，代理不要记录请求正文。
 
-模板通过独立的 `GET/POST /api/settings/agent-config-template` 接口保存，原有 PUT 方法继续兼容。沿用登录鉴权、同源校验和 `Cache-Control: no-store`，POST/PUT 请求均为 `{"yaml":"配置原文"}`，校验最大 4 MiB 的单份 YAML 映射后，原样覆盖 SQLite 中唯一一份共享模板；返回 `{"yaml":"已保存原文"}`。GET 读取最近保存的内容，尚未保存时返回 `{"yaml":null}`，由前端提供内置示例。注释、缩进和换行会保留，跨浏览器、跨设备和重启均可恢复。只有显式存储模板会持久化 YAML 明文，加密不会更改模板。数据库启动时自动升级到 schema v10，保留共享模板、机器配置分配并增加安全组件事件、快照与 sudo 会话表；需配套更新前端与 Agent。
+模板通过独立的 `GET/POST /api/settings/agent-config-template` 接口保存，原有 PUT 方法继续兼容。沿用登录鉴权、同源校验和 `Cache-Control: no-store`，POST/PUT 请求均为 `{"yaml":"配置原文"}`，校验最大 4 MiB 的单份 YAML 映射后，原样覆盖 SQLite 中唯一一份共享模板；返回 `{"yaml":"已保存原文"}`。GET 读取最近保存的内容，尚未保存时返回 `{"yaml":null}`，由前端提供内置示例。注释、缩进和换行会保留，跨浏览器、跨设备和重启均可恢复。只有显式存储模板会持久化 YAML 明文，加密不会更改模板。数据库启动时自动升级到 schema v11，保留共享模板、机器配置分配并增加安全组件事件、快照与 sudo 会话表；需配套更新前端与 Agent。
 
 通用 Agent 代码内置配套固定私钥，不内嵌 YAML。将页面生成的 `config.age` 与配套新版 Agent 放在同一目录；配置变更只需重新加密替换，单次运行下次启动生效，常驻服务重启生效。首次迁移须更新 Agent 和 Master 并重新加密旧配置。源码持有者和节点 root 可恢复配置，固定密钥不提供对此类人员的保密保证。
 
@@ -19,6 +19,30 @@ SQLite 数据文件为 `/data/anquan/anquan.db`。第一次启动自动创建目
 ## 主控软件下载管理
 
 新版 Agent 的软件源、依赖包和 Tetragon 发布包可通过主控下载，复用现有 TCP 55556，无需新开 55557。页面“管理设置 → 软件下载管理”默认关闭；安装前临时开启，默认 15 分钟、最多 60 分钟，到期自动关闭，主控重启仍保持关闭。关闭立即终止活跃下载，Agent 安装完成主动释放会话。下载源及窗口时长保存在新增的 schema v10 设置表，升级前备份数据库。主控需有外网出口；该中继不缓存包。凭证、域名白名单、公网地址验证、并发和流量限制详见 [API](docs/api.md#主控软件下载管理) 与 [Agent 协议](docs/agent-protocol.md#软件包下载中继复用-tcp-55556)。
+
+## Agent 远程更新
+
+“管理设置 → Agent 程序更新”从主控默认 `/usr/local/anquan-agent/dist` 读取 `anquan` 和 `anquan.update.json`，点击“读取并打包”后自动生成只包含 `anquan` 的 tar.gz 快照，再选择在线机器下发。需要使用新版 Agent 仓库的 `anqu-build` 重新编译，构建器会同时输出版本、Linux 架构、SHA-256 和大小清单；Master 不执行待发布的程序，也不使用旧 `anquan.tar.gz` 作为更新来源。可通过 `ANQUAN_AGENT_DIST_DIR` 设置其他目录。
+
+```sh
+cd /usr/local/anquan-agent
+git pull --ff-only
+go run ./cmd/anqu-build -output ./dist/anquan -goos linux -goarch "$(go env GOARCH)"
+# 原生 deploy.sh 默认以 anquan 用户运行主控。root 编译后赋予该组读取权限。
+sudo chgrp anquan ./dist/anquan ./dist/anquan.update.json
+sudo chmod 0750 ./dist/anquan
+sudo chmod 0640 ./dist/anquan.update.json
+```
+
+上级 `/usr/local/anquan-agent` 与 `dist` 目录还需允许 `anquan` 用户遍历；如果使用受限目录，可为该用户配置目录组执行权限。Docker 的容器 UID/GID 与宿主机账号独立，需按实际容器 UID/GID 设置读取权限。
+
+每次只展示一个已准备版本，下发必须精确匹配页面确认的压缩包摘要；仅允许支持更新、在线、相同 Linux/amd64 或 Linux/arm64 平台、且当前正式版本低于目标版本的机器。批次全量校验，有一台不符合时不创建任何任务；同一台机器一次只允许一个更新任务。不支持降级、开发版本或跨架构安装。版本 0.7.2 和更早的 Agent 没有接收更新的代码，首次须手动安装支持此功能的新版，此后才可在页面选机更新。
+
+Agent 主动通过原 TCP 55556 建立独立下载连接，控制连接继续传配置和心跳，无需新增端口。更新包是管理员已选定的主控本地文件，与“软件下载管理”的临时公网软件源代理开关独立。每个任务使用 10 分钟有效的随机下载凭证，绑定当前控制连接和来源地址；全局最多 8 个下载，每台最多 1 个，传输最多 2 分钟。仅下载并不表示更新成功，页面会显示等待、下载、重启、成功、失败或已回滚；必须由目标版本重新连接并报告匹配的任务、平台及二进制摘要后才确认成功。
+
+Master 使用持久 Ed25519 密钥签名发布描述，Agent 首次连接按主控端点固定公钥；首次连接仍应通过可信内网完成。主控数据目录的 `agent-updates/` 保存发布快照，SQLite schema v11 保存签名密钥、当前版本和机器任务。重启使未完成的等待/下载任务失败，重启中的任务仍需新程序回执。再次准备版本时清理不再用于当前版本或有效任务的旧快照。升级前对 SQLite 做一致性备份并保留 `agent-updates/`；签名密钥丢失会导致已固定公钥的 Agent 拒绝更新，回退旧 Master 应恢复升级前备份，不要手动降低 `user_version`。
+
+Docker Compose 已将 `/usr/local/anquan-agent/dist` 同路径只读挂入 Master，发布快照继续写 `/data/anquan/agent-updates`。容器以 `anquan` 用户运行，需要该目录可遍历，`anquan` 和 `anquan.update.json` 可读取；默认 root 编译产物若是 `0700`，需按容器实际 UID/GID 配置目录和文件的组读取权限（例如目录 `0750`、文件 `0640`），挂载只读不会自动赋予读取权限。原生服务同样检查运行用户权限。接口及帧格式见 [API](docs/api.md#agent-远程更新) 与 [Agent 协议](docs/agent-protocol.md#agent-远程更新复用-tcp-55556)。
 
 ## 安全组件配置与采集初版
 
@@ -40,7 +64,7 @@ SQLite 数据文件为 `/data/anquan/anquan.db`。第一次启动自动创建目
 
 按需开启 `security.sudo.upload_io` 后，sudo 会话分片存入独立表，不把 Base64 大字段重复写入普通事件表。`GET /api/security/sudo-sessions` 查看会话及文件完整性，`GET /api/security/sudo-sessions/{id}/files/{file}` 下载完整的原始会话文件，供 `sudoreplay` 使用；初版不提供网页播放器。单片最多 24 KiB，单文件最多 64 MiB，原始录制内容可能包含敏感输入输出，应按实际需求启用。当前文件随机器删除级联删除，尚未提供自动保留期限清理，需要监测数据库容量并制定备份/清理策略。
 
-启动时自动升级到 schema v10，保留既有账号、会话、机器、事件、通知队列、共享模板与配置分配。升级前备份 SQLite 数据；旧 Master 无法打开升级后的数据库。Agent 上报源继续沿用现有网络信任边界，不增加新的身份认证通道。
+启动时自动升级到 schema v11，保留既有账号、会话、机器、事件、通知队列、共享模板与配置分配。升级前备份 SQLite 数据；旧 Master 无法打开升级后的数据库。Agent 上报源继续沿用现有网络信任边界，不增加新的身份认证通道。
 
 ## 服务器独立部署脚本（推荐）
 
@@ -223,7 +247,7 @@ server:
 
 操作命令使用 `command_history` 事件，保留发生时间、用户、终端、完整命令、来源日志和字节位置；`/api/events?type=command_history` 支持现有筛选、分页和关键字搜索。正常命令不触发 webhook。发生时间取 `data.command_time`，接收时间另存。相同文本在同一秒执行多次仍分别保留，重传按机器与来源记录 ID 去重。
 
-启动自动迁移 SQLite 到 schema v10，保留离线状态、共享模板、事件、备注、通知配置、队列、重试信息、机器配置分配和应用确认状态，并新增安全组件事件、快照及 sudo 会话数据。离线通知只需更新 Master，Web 更新用于中文标签及说明，Agent 无需修改。模板存储需同时更新 Master/Web。启用 Agent v0.7.0 的安全组件或 v0.6.0 的 `history` 时仍应先更新 Master/Web。旧二进制不支持 schema v10，回退需要使用升级前的数据库备份。
+启动自动迁移 SQLite 到 schema v11，保留离线状态、共享模板、事件、备注、通知配置、队列、重试信息、机器配置分配和应用确认状态，并新增安全组件事件、快照及 sudo 会话数据。离线通知只需更新 Master，Web 更新用于中文标签及说明，Agent 无需修改。模板存储需同时更新 Master/Web。启用 Agent v0.7.0 的安全组件或 v0.6.0 的 `history` 时仍应先更新 Master/Web。旧二进制不支持 schema v11，回退需要使用升级前的数据库备份。
 
 按内网场景部署，打通 Agent 到主控的 `55555/UDP` 及返回流量，不需要 UDP 认证、加密或手工注册。巡检、登录、摘要和心跳为尽力投递。命令采集请求 ACK，主控成功落库后回复，重复报文也确认；Agent 持久保留未确认批次并重试。完整格式见 [Agent 协议](docs/agent-protocol.md)。
 

@@ -1,5 +1,17 @@
 # Agent / Master UDP 协议
 
+## Agent 远程更新（复用 TCP 55556）
+
+支持更新的 Agent 控制 hello 增加 `self_update:true,goos:"linux",goarch:"amd64"或"arm64",agent_version:"0.7.3"`。Master identity 增加 `update_public_key`（标准 Base64 的 Ed25519 公钥），Agent 按主控端点首次固定公钥并拒绝无授权更换。旧 hello 保持兼容；未声明能力不会收到更新。
+
+管理员选机后，控制连接收到 `{version:1,type:"update_offer",update:{job_id,version,goos,goarch,sha256,size,binary_sha256,binary_size,expires_at,token,signature}}`。`signature` 是标准 Base64 Ed25519 签名；签名消息由上述顺序前 10 个字段组成的 JSON，字段均保留、无 signature，使用 Go `encoding/json.Marshal` 生成。expires_at 是 UTC RFC3339；token/job_id 是各自独立的 32 字节随机值小写 hex。摘要和大小同时绑定压缩包与解压二进制。
+
+Agent 主动另连相同 TCP 55556，发 `{version:1,type:"update_download",ip,token,job_id}`。Master 校验 job、当前控制连接、传输来源 IP、凭证、10 分钟有效期及并发（全局 8、每机器 1），并校验本地快照 SHA；回复 `{version:1,type:"update_ready",size}` 换行后紧跟恰好 size 字节的原始 tar.gz，传输期限最多 2 分钟且不超过凭证有效期，传完关闭下载连接。tar.gz 仅包含普通文件 `anquan`；压缩包最多 128 MiB、二进制最多 256 MiB。非法请求只回复 error 并关闭，不启用公网软件源代理。控制连接可继续 ping/config。
+
+Agent 通过控制连接发 `{version:1,type:"update_status",update_job_id,update_result:{job_id,status,error}}`，status 接受 `downloading/restarting/failed/rolled_back`，顶层 job_id/status/error 作为兼容格式；`applied` 不直接信任。更换程序后的首次 hello 增加 `update_job_id,update_binary_sha256`，Master 必须匹配持久的 restarting 任务、目标版本、平台和二进制 SHA，然后等待独立 `{version:1,type:"update_result",update_job_id,update_binary_sha256,agent_version,goos,goarch,update_result:{job_id,status:"applied"}}` 才标记成功。回滚旧程序可在 hello 增加 `update_result:{job_id,status:"rolled_back",error}` 确认回滚；任务仍需匹配且未过期。
+
+控制连接断开或替换会撤销原下载凭证并关闭其下载流；pending/downloading 任务失败，restarting 保留等待替换后的程序。Master 重启不恢复旧下载凭证，也不会假定任务成功。签名密钥与当前发布及任务存入 SQLite schema v11；发布快照位于数据目录 agent-updates。首次信任和 Agent 身份仍依赖现有可信内网边界，端口只对可信 Agent 网络开放。
+
 Agent 向主控 `55555/udp` 发送 UTF-8 JSON，每个数据报是一条完整事件，单条不超过 60000 字节。Agent 还主动连接主控 `55556/tcp` 接收配置。主控 HTTP API 与前端分别使用 `10110/tcp`、`10111/tcp`。当前扩展保留 `version: 1` 和原有字段。
 
 ## 机器身份与配置

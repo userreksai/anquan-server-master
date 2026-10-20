@@ -27,11 +27,13 @@ type Server struct {
 	configAgents  map[string]*agentConfigConnection
 	configAll     map[*agentConfigConnection]struct{}
 	packages      *packageDownloads
+	agentUpdates  *agentUpdates
 }
 
 func New(s *Store, secureCookie bool, logger *slog.Logger) *Server {
 	server := &Server{Store: s, SecureCookie: secureCookie, Logger: logger, Client: WebhookClient(), loginAttempts: map[string]attempt{}, configAgents: map[string]*agentConfigConnection{}, configAll: map[*agentConfigConnection]struct{}{}}
 	server.packages = newPackageDownloads(s, logger)
+	server.agentUpdates = newAgentUpdates(s, logger)
 	return server
 }
 
@@ -63,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings/event-policy", s.saveEventPolicy)
 	mux.HandleFunc("GET /api/settings/package-downloads", s.getPackageDownloads)
 	mux.HandleFunc("PUT /api/settings/package-downloads", s.savePackageDownloads)
+	mux.HandleFunc("GET /api/settings/agent-updates", s.getAgentUpdates)
+	mux.HandleFunc("POST /api/settings/agent-updates/package", s.packageAgentUpdate)
+	mux.HandleFunc("POST /api/settings/agent-updates", s.startAgentUpdates)
 	mux.HandleFunc("GET /api/security/status", s.securityStatus)
 	mux.HandleFunc("GET /api/security/sudo-sessions", s.sudoSessions)
 	mux.HandleFunc("GET /api/security/sudo-sessions/{id}/files/{file}", s.sudoSessionFile)
