@@ -26,10 +26,13 @@ type Server struct {
 	configMu      sync.Mutex
 	configAgents  map[string]*agentConfigConnection
 	configAll     map[*agentConfigConnection]struct{}
+	packages      *packageDownloads
 }
 
 func New(s *Store, secureCookie bool, logger *slog.Logger) *Server {
-	return &Server{Store: s, SecureCookie: secureCookie, Logger: logger, Client: WebhookClient(), loginAttempts: map[string]attempt{}, configAgents: map[string]*agentConfigConnection{}, configAll: map[*agentConfigConnection]struct{}{}}
+	server := &Server{Store: s, SecureCookie: secureCookie, Logger: logger, Client: WebhookClient(), loginAttempts: map[string]attempt{}, configAgents: map[string]*agentConfigConnection{}, configAll: map[*agentConfigConnection]struct{}{}}
+	server.packages = newPackageDownloads(s, logger)
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
@@ -58,6 +61,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings/security-profile/defaults", s.securityProfileDefaults)
 	mux.HandleFunc("GET /api/settings/event-policy", s.getEventPolicy)
 	mux.HandleFunc("PUT /api/settings/event-policy", s.saveEventPolicy)
+	mux.HandleFunc("GET /api/settings/package-downloads", s.getPackageDownloads)
+	mux.HandleFunc("PUT /api/settings/package-downloads", s.savePackageDownloads)
 	mux.HandleFunc("GET /api/security/status", s.securityStatus)
 	mux.HandleFunc("GET /api/security/sudo-sessions", s.sudoSessions)
 	mux.HandleFunc("GET /api/security/sudo-sessions/{id}/files/{file}", s.sudoSessionFile)

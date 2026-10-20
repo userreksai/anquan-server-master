@@ -13,6 +13,8 @@
 | PUT | `/api/auth/password` | `{current_password,new_password}`，使全部会话失效 |
 | GET | `/api/settings/event-policy` | 读取主控全局安全运行事件最低级别、Tetragon 屏蔽与巡检保留设置 |
 | PUT | `/api/settings/event-policy` | `{tetragon_ignored_kinds: string[],scan_summary_retention_hours: 12 或 24,security_event_min_severity?: string}` |
+| GET | `/api/settings/package-downloads` | 读取软件下载窗口、允许源、活跃会话和流量 |
+| PUT | `/api/settings/package-downloads` | `{enabled: boolean,window_minutes?: 1–60,allowed_hosts?: string[]}`；关闭立即终止下载 |
 | GET | `/api/overview` | 机器/在线机器/事件/告警/待处理/登录/待投递数量 |
 | GET | `/api/machines` | `q,page,page_size` 搜索 IP、主机名、别名、备注 |
 | GET | `/api/machines/{ip}` | 单台机器 |
@@ -90,6 +92,31 @@ Lark/飞书即使 HTTP 200，业务码非零、缺失或无效仍返回 `success
 
 总览字段：`machines,online_machines,events,alerts,open_alerts,ssh_logins,pending_notifications`。待通知数量包括已暂停地址的未发送记录。
 
+## 主控软件下载管理
+
+`GET/PUT /api/settings/package-downloads` 使用已有管理员会话、同源及 JSON 校验。默认关闭；开启默认 15 分钟，允许 1–60 分钟，到期主动关闭，主控重启保持关闭。`window_minutes` 与 `allowed_hosts` 持久保存；PUT 可只提交 `{"enabled":false}` 立即关闭，或 `{"enabled":true,"window_minutes":15}` 临时开启。省略列表/时长保留当前值；未知字段、非法时长、空列表或超过 128 个域名返回 400。
+
+成功返回相同结构：
+
+```json
+{
+  "enabled": false,
+  "expires_at": null,
+  "window_minutes": 15,
+  "allowed_hosts": ["archive.ubuntu.com", "security.ubuntu.com", "*.ec2.archive.ubuntu.com"],
+  "active_sessions": 0,
+  "active_connections": 0,
+  "bytes_transferred": 0,
+  "last_error": ""
+}
+```
+
+示例源列表为节选；完整默认列表还包含 Debian、GitHub 发布资产和常用官方 RPM 源。管理员可增补完整域名；只允许内置 `*.ec2.archive.ubuntu.com` 通配规则。每次保存撤销已有下载会话。`expires_at` 开启时为带时区 ISO8601，关闭时为 null；`bytes_transferred` 为主控本次启动后双向中继的累计字节，不持久保存。
+
+下载复用现有 `55556/TCP`，无需开放 `55557`，不提供匿名公开下载 URL。只有当前在线配置连接获得的临时凭证、相同来源地址且已由管理员分配非空配置的 Agent 能创建会话；凭证不写入数据库、日志或 HTTP 状态。每个会话最多 10 分钟且不超过全局窗口，完成安装后 Agent 主动关闭。关闭、过期、配置重下发、配置连接断开或替换会撤销会话并终止活跃流。只允许白名单域名的 80/443，DNS 中包含非公网地址时拒绝，并直接拨号已验证的公网 IP，避免 DNS 重绑定及环境代理绕过。中继不缓存安装包，主控需要公网下载能力；APT/RPM 的依赖与索引同样经主控下载。
+
+资源限额为全局 128 会话、32 条活跃下载、每 Agent 8 条下载；每条流每方向最多 512 MiB，每会话累计最多 2 GiB，空闲 60 秒关闭。沿用现有可信内网边界，配置 TCP 通道没有 TLS 或独立节点证书，不应把 55556 暴露给不可信网络。
+
 ## 共享 Agent YAML 模板
 
 | 方法 | 路径 | 用途 |
@@ -114,7 +141,7 @@ POST/PUT 均要求管理员登录、同源校验及 `application/json`。最大 
 
 沿用管理员登录、JSON、同源校验。YAML 最大 4 MiB，必须是单份键值映射；机器列表必须非空且已登记。主控加密后在一个事务中覆盖所选机器的最新分配，返回 `{items:[所选机器的状态]}`。HTTP 200 表示主控已保存；是否在节点生效须查看后续 `applied` 确认。离线或旧版 Agent 保持待下发，新版 Agent 连接后自动投递。旧版本 ACK 不会覆盖更新版本状态。共享模板的存储与下发各自独立。
 
-Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v9，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
+Agent 使用自己平台上的完整配置校验，校验或配置切换失败返回 `failed`，保留当前有效配置；修正 YAML 后再次下发。数据库自动迁移到 schema v10，保留已有机器、事件、账号、通知和模板；回退旧 Master 前使用升级前备份。
 
 ## 安全组件表单与状态
 

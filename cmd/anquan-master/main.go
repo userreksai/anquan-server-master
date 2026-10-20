@@ -64,8 +64,8 @@ func run(args []string) error {
 		return errors.New("unexpected positional argument")
 	}
 	// Validate deployment settings before creating the database or listeners.
-	srv := server.New(nil, *secureCookie, slog.Default())
-	if err = srv.SetPublicOrigin(*publicOrigin); err != nil {
+	originValidator := &server.Server{}
+	if err = originValidator.SetPublicOrigin(*publicOrigin); err != nil {
 		return fmt.Errorf("--public-origin/ANQUAN_PUBLIC_ORIGIN: %w", err)
 	}
 	store, err := server.Open(*dataDir)
@@ -73,7 +73,10 @@ func run(args []string) error {
 		return err
 	}
 	defer store.Close()
-	srv.Store = store
+	srv := server.New(store, *secureCookie, slog.Default())
+	if err = srv.SetPublicOrigin(*publicOrigin); err != nil {
+		return err
+	}
 	udp, err := net.ResolveUDPAddr("udp", *udpAddr)
 	if err != nil {
 		return err

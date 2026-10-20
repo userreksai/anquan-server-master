@@ -130,6 +130,7 @@ func (s *Server) saveAgentConfigDeliveries(w http.ResponseWriter, r *http.Reques
 	s.configMu.Lock()
 	for ip := range selected {
 		if agent := s.configAgents[ip]; agent != nil {
+			s.packages.revokeOwner(agent)
 			agent.requestConfig()
 		}
 	}

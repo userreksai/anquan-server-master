@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const maxAgentTCPFrameBytes = 8 << 20
@@ -19,25 +20,32 @@ const maxAgentTCPConnections = 1024
 // Frames are newline-delimited JSON. Ciphertext is armored age encrypted to
 // the fixed agent recipient; revision is its lowercase SHA-256 digest.
 type agentConfigFrame struct {
-	Version      int    `json:"version"`
-	Type         string `json:"type"`
-	IP           string `json:"ip,omitempty"`
-	ReportedIP   string `json:"reported_ip,omitempty"`
-	Host         string `json:"host,omitempty"`
-	AgentVersion string `json:"agent_version,omitempty"`
-	DiscoverIP   bool   `json:"discover_ip,omitempty"`
-	Revision     string `json:"revision,omitempty"`
-	Ciphertext   string `json:"ciphertext,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Version       int    `json:"version"`
+	Type          string `json:"type"`
+	IP            string `json:"ip,omitempty"`
+	ReportedIP    string `json:"reported_ip,omitempty"`
+	Host          string `json:"host,omitempty"`
+	AgentVersion  string `json:"agent_version,omitempty"`
+	DiscoverIP    bool   `json:"discover_ip,omitempty"`
+	Revision      string `json:"revision,omitempty"`
+	Ciphertext    string `json:"ciphertext,omitempty"`
+	Error         string `json:"error,omitempty"`
+	DownloadRelay bool   `json:"download_relay,omitempty"`
+	DownloadToken string `json:"download_token,omitempty"`
+	Token         string `json:"token,omitempty"`
+	Target        string `json:"target,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
 }
 
 type agentConfigConnection struct {
-	conn         net.Conn
-	ip           string
-	updates      chan struct{}
-	done         chan struct{}
-	writeMu      sync.Mutex
-	lastRevision string
+	conn          net.Conn
+	ip            string
+	updates       chan struct{}
+	done          chan struct{}
+	writeMu       sync.Mutex
+	lastRevision  string
+	downloadToken string
+	source        string
 }
 
 func (c *agentConfigConnection) requestConfig() {
@@ -54,6 +62,7 @@ func (s *Server) ServeAgentTCP(ctx context.Context, listener net.Listener) error
 	stop := make(chan struct{})
 	closeConnections := func() {
 		_ = listener.Close()
+		s.packages.disable()
 		s.configMu.Lock()
 		for agent := range s.configAll {
 			_ = agent.conn.Close()
@@ -127,11 +136,12 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 		}
 		delete(s.configAll, agent)
 		s.configMu.Unlock()
+		s.packages.revokeOwner(agent)
 	}()
 	reader := bufio.NewReader(agent.conn)
 	_ = agent.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	hello, err := readAgentFrame(reader, 4096)
-	if err != nil || hello.Type != "hello" || strings.TrimSpace(hello.Host) == "" || len(hello.Host) > 255 || len(hello.AgentVersion) > 255 {
+	if err != nil {
 		return
 	}
 	source, _, err := net.SplitHostPort(agent.conn.RemoteAddr().String())
@@ -141,6 +151,20 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 	source, err = normalizeIP(source)
 	if err != nil {
 		return
+	}
+	agent.source = source
+	if strings.HasPrefix(hello.Type, "package_") {
+		s.servePackageConnection(ctx, agent, reader, hello)
+		return
+	}
+	if hello.Type != "hello" || strings.TrimSpace(hello.Host) == "" || len(hello.Host) > 255 || len(hello.AgentVersion) > 255 {
+		return
+	}
+	if hello.DownloadRelay {
+		agent.downloadToken, err = packageToken()
+		if err != nil {
+			return
+		}
 	}
 	ip := hello.IP
 	if hello.ReportedIP != "" {
@@ -178,13 +202,14 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 	s.configAgents[agent.ip] = agent
 	s.configMu.Unlock()
 	if previous != nil {
+		s.packages.revokeOwner(previous)
 		_ = previous.conn.Close()
 	}
 	// Confirm the new reported identity before configuration delivery. Old
 	// discovery agents still receive the observed peer, while legacy explicit
 	// IP agents retain their original hello/response protocol.
-	if hello.ReportedIP != "" || hello.DiscoverIP {
-		if err := writeAgentFrame(agent.conn, agentConfigFrame{Version: 1, Type: "identity", IP: agent.ip}); err != nil {
+	if hello.ReportedIP != "" || hello.DiscoverIP || hello.DownloadRelay {
+		if err := writeAgentFrame(agent.conn, agentConfigFrame{Version: 1, Type: "identity", IP: agent.ip, DownloadToken: agent.downloadToken}); err != nil {
 			return
 		}
 	}
@@ -235,9 +260,10 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 }
 
 func (s *Server) ackAgentConfig(ctx context.Context, agent *agentConfigConnection, frame agentConfigFrame) error {
-	if len(frame.Error) > 4096 || len(frame.Revision) > 64 {
+	if len(frame.Revision) > 64 {
 		return errors.New("invalid agent acknowledgement")
 	}
+	frame.Error = truncateAgentError(frame.Error)
 	agent.writeMu.Lock()
 	defer agent.writeMu.Unlock()
 	s.configMu.Lock()
@@ -252,6 +278,20 @@ func (s *Server) ackAgentConfig(ctx context.Context, agent *agentConfigConnectio
 	}
 	_, err := s.Store.DB.ExecContext(ctx, `UPDATE agent_config_deliveries SET status=?,error=?,applied_at=? WHERE machine_ip=? AND revision=?`, status, frame.Error, applied, agent.ip, frame.Revision)
 	return err
+}
+
+// Large package-manager diagnostics must remain a failed delivery instead of
+// disconnecting the Agent and leaving the UI indefinitely pending.
+func truncateAgentError(value string) string {
+	if len(value) <= 4096 {
+		return value
+	}
+	const suffix = "\n[truncated]"
+	n := 4096 - len(suffix)
+	for n > 0 && !utf8.RuneStart(value[n]) {
+		n--
+	}
+	return value[:n] + suffix
 }
 
 func writeAgentFrame(conn net.Conn, frame agentConfigFrame) error {
@@ -301,6 +341,9 @@ func (s *Server) sendCurrentAgentConfig(ctx context.Context, agent *agentConfigC
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		s.configMu.Unlock()
 		return err
+	}
+	if frame.Revision != agent.lastRevision {
+		s.packages.revokeOwner(agent)
 	}
 	if frame.Revision != "" {
 		if _, err := s.Store.DB.ExecContext(ctx, `UPDATE agent_config_deliveries SET status='pending',error='',applied_at=NULL WHERE machine_ip=? AND revision=?`, agent.ip, frame.Revision); err != nil {

@@ -263,7 +263,7 @@ func TestV3MigrationPreservesDataAndDetectsExistingOfflineMachine(t *testing.T) 
 	}
 	defer s.Close()
 	var version int
-	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
 		t.Fatal("v3 database not upgraded", err)
 	}
 	requireOffline(t, s, now, 1)
