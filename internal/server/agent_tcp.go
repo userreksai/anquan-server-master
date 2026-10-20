@@ -20,32 +20,57 @@ const maxAgentTCPConnections = 1024
 // Frames are newline-delimited JSON. Ciphertext is armored age encrypted to
 // the fixed agent recipient; revision is its lowercase SHA-256 digest.
 type agentConfigFrame struct {
-	Version       int    `json:"version"`
-	Type          string `json:"type"`
-	IP            string `json:"ip,omitempty"`
-	ReportedIP    string `json:"reported_ip,omitempty"`
-	Host          string `json:"host,omitempty"`
-	AgentVersion  string `json:"agent_version,omitempty"`
-	DiscoverIP    bool   `json:"discover_ip,omitempty"`
-	Revision      string `json:"revision,omitempty"`
-	Ciphertext    string `json:"ciphertext,omitempty"`
-	Error         string `json:"error,omitempty"`
-	DownloadRelay bool   `json:"download_relay,omitempty"`
-	DownloadToken string `json:"download_token,omitempty"`
-	Token         string `json:"token,omitempty"`
-	Target        string `json:"target,omitempty"`
-	ExpiresAt     string `json:"expires_at,omitempty"`
+	Version            int                    `json:"version"`
+	Type               string                 `json:"type"`
+	IP                 string                 `json:"ip,omitempty"`
+	ReportedIP         string                 `json:"reported_ip,omitempty"`
+	Host               string                 `json:"host,omitempty"`
+	AgentVersion       string                 `json:"agent_version,omitempty"`
+	DiscoverIP         bool                   `json:"discover_ip,omitempty"`
+	Revision           string                 `json:"revision,omitempty"`
+	Ciphertext         string                 `json:"ciphertext,omitempty"`
+	Error              string                 `json:"error,omitempty"`
+	DownloadRelay      bool                   `json:"download_relay,omitempty"`
+	DownloadToken      string                 `json:"download_token,omitempty"`
+	Token              string                 `json:"token,omitempty"`
+	Target             string                 `json:"target,omitempty"`
+	ExpiresAt          string                 `json:"expires_at,omitempty"`
+	SelfUpdate         bool                   `json:"self_update,omitempty"`
+	GOOS               string                 `json:"goos,omitempty"`
+	GOARCH             string                 `json:"goarch,omitempty"`
+	UpdatePublicKey    string                 `json:"update_public_key,omitempty"`
+	Update             *agentUpdateDescriptor `json:"update,omitempty"`
+	UpdateResult       *agentUpdateResult     `json:"update_result,omitempty"`
+	UpdateJobID        string                 `json:"update_job_id,omitempty"`
+	UpdateBinarySHA256 string                 `json:"update_binary_sha256,omitempty"`
+	JobID              string                 `json:"job_id,omitempty"`
+	Status             string                 `json:"status,omitempty"`
+	Size               int64                  `json:"size,omitempty"`
 }
 
 type agentConfigConnection struct {
-	conn          net.Conn
-	ip            string
-	updates       chan struct{}
-	done          chan struct{}
-	writeMu       sync.Mutex
-	lastRevision  string
-	downloadToken string
-	source        string
+	conn               net.Conn
+	ip                 string
+	updates            chan struct{}
+	done               chan struct{}
+	writeMu            sync.Mutex
+	lastRevision       string
+	downloadToken      string
+	source             string
+	selfUpdate         bool
+	agentVersion       string
+	goos               string
+	goarch             string
+	selfUpdates        chan struct{}
+	updateJobID        string
+	updateBinarySHA256 string
+}
+
+func (c *agentConfigConnection) requestSelfUpdate() {
+	select {
+	case c.selfUpdates <- struct{}{}:
+	default:
+	}
 }
 
 func (c *agentConfigConnection) requestConfig() {
@@ -85,7 +110,7 @@ func (s *Server) ServeAgentTCP(ctx context.Context, listener net.Listener) error
 			}
 			return err
 		}
-		agent := &agentConfigConnection{conn: conn, updates: make(chan struct{}, 1), done: make(chan struct{})}
+		agent := &agentConfigConnection{conn: conn, updates: make(chan struct{}, 1), selfUpdates: make(chan struct{}, 1), done: make(chan struct{})}
 		s.configMu.Lock()
 		if ctx.Err() != nil || len(s.configAll) >= maxAgentTCPConnections {
 			s.configMu.Unlock()
@@ -137,6 +162,7 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 		delete(s.configAll, agent)
 		s.configMu.Unlock()
 		s.packages.revokeOwner(agent)
+		s.disconnectAgentUpdate(agent)
 	}()
 	reader := bufio.NewReader(agent.conn)
 	_ = agent.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -153,6 +179,10 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 		return
 	}
 	agent.source = source
+	if hello.Type == "update_download" {
+		s.serveAgentUpdateDownload(ctx, agent, hello)
+		return
+	}
 	if strings.HasPrefix(hello.Type, "package_") {
 		s.servePackageConnection(ctx, agent, reader, hello)
 		return
@@ -160,6 +190,9 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 	if hello.Type != "hello" || strings.TrimSpace(hello.Host) == "" || len(hello.Host) > 255 || len(hello.AgentVersion) > 255 {
 		return
 	}
+	agent.agentVersion, agent.goos, agent.goarch = hello.AgentVersion, hello.GOOS, hello.GOARCH
+	_, validVersion := parseAgentVersion(hello.AgentVersion)
+	agent.selfUpdate = hello.SelfUpdate && validVersion && hello.GOOS == "linux" && (hello.GOARCH == "amd64" || hello.GOARCH == "arm64")
 	if hello.DownloadRelay {
 		agent.downloadToken, err = packageToken()
 		if err != nil {
@@ -203,15 +236,19 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 	s.configMu.Unlock()
 	if previous != nil {
 		s.packages.revokeOwner(previous)
+		s.disconnectAgentUpdate(previous)
 		_ = previous.conn.Close()
 	}
 	// Confirm the new reported identity before configuration delivery. Old
 	// discovery agents still receive the observed peer, while legacy explicit
 	// IP agents retain their original hello/response protocol.
-	if hello.ReportedIP != "" || hello.DiscoverIP || hello.DownloadRelay {
-		if err := writeAgentFrame(agent.conn, agentConfigFrame{Version: 1, Type: "identity", IP: agent.ip, DownloadToken: agent.downloadToken}); err != nil {
+	if hello.ReportedIP != "" || hello.DiscoverIP || hello.DownloadRelay || hello.SelfUpdate {
+		if err := writeAgentFrame(agent.conn, agentConfigFrame{Version: 1, Type: "identity", IP: agent.ip, DownloadToken: agent.downloadToken, UpdatePublicKey: s.agentUpdates.publicKey()}); err != nil {
 			return
 		}
+	}
+	if err := s.resumeAgentUpdate(ctx, agent, hello); err != nil {
+		return
 	}
 	writerDone := make(chan struct{})
 	go func() {
@@ -224,6 +261,11 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 				return
 			case <-agent.updates:
 				if err := s.sendCurrentAgentConfig(ctx, agent); err != nil {
+					_ = agent.conn.Close()
+					return
+				}
+			case <-agent.selfUpdates:
+				if err := s.sendAgentUpdate(ctx, agent); err != nil {
 					_ = agent.conn.Close()
 					return
 				}
@@ -251,6 +293,14 @@ func (s *Server) serveConfigAgent(ctx context.Context, agent *agentConfigConnect
 			}
 		case "ack":
 			if err := s.ackAgentConfig(ctx, agent, frame); err != nil {
+				return
+			}
+		case "update_status":
+			if err := s.agentUpdateStatus(ctx, agent, frame); err != nil {
+				return
+			}
+		case "update_result":
+			if err := s.finishAgentUpdate(ctx, agent, frame); err != nil {
 				return
 			}
 		default:

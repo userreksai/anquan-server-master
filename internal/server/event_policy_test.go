@@ -161,7 +161,7 @@ func TestV7EventPolicyMigrationKeepsExistingData(t *testing.T) {
 	}
 	defer reopened.Close()
 	var version int
-	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err := reopened.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 11 {
 		t.Fatalf("wrong migration version: %d %v", version, err)
 	}
 	if countRows(t, reopened, "events") != 1 || countRows(t, reopened, "outbox") != 1 {
