@@ -58,6 +58,10 @@ Docker Compose 已将 `/usr/local/anquan-agent/dist` 同路径只读挂入 Maste
 
 前端安全配置表单通过 `POST /api/settings/security-profile/compose` 将配置合并到共享 Agent YAML 的 `security` 节点，再复用原有模板保存、age 加密与按机器下发接口。该接口只合成配置，不保存、不下发。配置交付状态与各组件实际安装/应用状态分别查看，组件安装或 reload 失败会在状态中报告。
 
+`security.native_fim.capture_created_content` 默认开启，配套新版 Agent 在监控基线建立后，对新建的非敏感文本文件留存已观察到的内容版本，并在修改和删除事件中附带可用的前后内容。显式设置为 `false` 可关闭此自动留存；`report_changes` 仍默认关闭，独立控制已有文件的文本差异。内容受 `max_diff_bytes` 与传输大小限制，二进制、敏感路径、截断及未捕获状态在事件明细中明确标注。此功能不扩大监控路径，也不能恢复 Agent 尚未读取即已消失的文件。
+
+原生文件事件保持 `native_fim/file_change` 协议，通过 `details.change` 区分新增、修改、删除或缺失；正文和前后元数据保存在事件 `details` 中。聊天通知显示具体操作、路径和内容留存摘要，不附带完整文件正文；通用 Webhook 的 `data` 继续保留完整原始事件。Agent 聚合同一写入过程并排除编辑器临时文件后，一条变更上报只生成一个通知任务；Master 对相同事件 ID 的确认补传继续去重，不按时间窗口丢弃不同变更。
+
 `GET /api/security/status` 返回每台机器最新组件快照；`GET /api/events?type=security_event` 查看通过主控筛选的审计事件。组件状态不触发 webhook；通过当前入库策略且有效级别为 `warning/error/critical` 的安全事件进入现有持久通知队列。快照按 Agent 事件时间更新，延迟上报不会覆盖较新状态。
 
 `security.sudo.grants` 可以配置受管 sudo 授权，包含本机用户、目标身份、绝对路径命令及是否免密。Agent 仅更新自己的片段，不移除系统现有的广泛授权；因此配置少量 grants 不代表已撤销用户原有权限。具体字段、字符限制及示例见 API 文档。

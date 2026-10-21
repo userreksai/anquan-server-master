@@ -37,7 +37,7 @@ var securityProfileSchema = profileObject(map[string]profileField{
 		"enabled": {kind: "bool"}, "io_logging": {kind: "bool"}, "upload_io": {kind: "bool"}, "max_session_bytes": {kind: "int"},
 		"grants": {kind: "objects", maximum: 128, fields: map[string]profileField{"user": {kind: "string"}, "run_as": {kind: "string"}, "commands": {kind: "strings"}, "nopasswd": {kind: "bool"}}},
 	}),
-	"native_fim": profileObject(map[string]profileField{"enabled": {kind: "bool"}, "paths": {kind: "strings"}, "poll_interval_seconds": {kind: "int"}, "report_changes": {kind: "bool"}, "max_diff_bytes": {kind: "int"}}),
+	"native_fim": profileObject(map[string]profileField{"enabled": {kind: "bool"}, "paths": {kind: "strings"}, "poll_interval_seconds": {kind: "int"}, "report_changes": {kind: "bool"}, "capture_created_content": {kind: "bool"}, "max_diff_bytes": {kind: "int"}}),
 	"ssh_auth":   profileObject(map[string]profileField{"enabled": {kind: "bool"}, "poll_interval_seconds": {kind: "int", minimum: 1, maximum: 300}, "initial_lookback_seconds": {kind: "int", minimum: 1, maximum: 86400}, "alert_threshold": {kind: "int", minimum: 1, maximum: 1000}, "window_seconds": {kind: "int", minimum: 10, maximum: 86400}}),
 	"policies": profileObject(map[string]profileField{
 		"mode":   {kind: "string", choices: "audit|enforce"},
@@ -345,7 +345,7 @@ func (s *Server) securityProfileDefaults(w http.ResponseWriter, r *http.Request)
 		"auditd":     map[string]any{"enabled": true, "audit_exec": true, "watch_paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "rules": []string{}},
 		"tetragon":   map[string]any{"enabled": false, "version": "v1.7.1", "download_url": "", "sha256": "", "config": "", "tracing_policy": ""},
 		"sudo":       map[string]any{"enabled": true, "io_logging": true, "upload_io": false, "max_session_bytes": 20971520, "grants": []any{}},
-		"native_fim": map[string]any{"enabled": true, "paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "poll_interval_seconds": 30, "report_changes": false, "max_diff_bytes": 8192},
+		"native_fim": map[string]any{"enabled": true, "paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "poll_interval_seconds": 30, "report_changes": false, "capture_created_content": true, "max_diff_bytes": 8192},
 		"ssh_auth":   map[string]any{"enabled": true, "poll_interval_seconds": 5, "initial_lookback_seconds": 300, "alert_threshold": 5, "window_seconds": 300},
 		"policies":   map[string]any{"mode": "audit", "ssh": map[string]any{"enabled": false, "password_authentication": "no", "permit_root_login": "prohibit-password", "allow_users": []string{}, "allow_sources": []string{}}, "sysctl": map[string]string{}, "session_timeout_seconds": 0, "disable_ctrl_alt_del": false, "grub": map[string]any{"enabled": false, "password_hash": ""}},
 	}})
