@@ -56,11 +56,14 @@ func NotificationText(event Event) string {
 			Command  string `json:"command"`
 		}
 		_ = json.Unmarshal(event.Data, &security)
-		text := fmt.Sprintf("【安全中心组件告警】\n机器 IP：%s\n主机：%s\n来源：%s\n类型：%s\n级别：%s\n时间（北京时间 UTC+8）：%s\n内容：%s", event.MachineIP, event.Host, securitySourceLabel(security.Source), securityKindLabel(security.Kind), securitySeverityLabel(security.Severity), beijingNotificationTime(event.Time), securityNotificationMessage(security.Source, security.Kind, security.Message))
+		text := fmt.Sprintf("【安全中心组件告警】\n机器 IP：%s\n主机：%s\n来源：%s\n类型：%s\n级别：%s\n时间（北京时间 UTC+8）：%s\n内容：%s", event.MachineIP, event.Host, securitySourceLabel(security.Source), securityNotificationKind(security.Source, security.Kind, event.Data), securitySeverityLabel(security.Severity), beijingNotificationTime(event.Time), securityNotificationMessage(security.Source, security.Kind, security.Message))
 		for _, field := range []struct{ label, value string }{{"路径", security.Path}, {"用户", security.User}, {"命令", security.Command}} {
 			if field.value != "" {
 				text += "\n" + field.label + "：" + field.value
 			}
+		}
+		if summary := nativeFIMContentSummary(security.Source, security.Kind, event.Data); summary != "" {
+			text += "\n内容留存：" + summary
 		}
 		return text + "\n事件 ID：" + event.EventID
 	}
