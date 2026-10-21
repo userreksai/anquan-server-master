@@ -65,6 +65,9 @@ func NotificationText(event Event) string {
 		if summary := nativeFIMContentSummary(security.Source, security.Kind, event.Data); summary != "" {
 			text += "\n内容留存：" + summary
 		}
+		if previews := nativeFIMContentPreviews(security.Source, security.Kind, event.Data); previews != "" {
+			text += "\n" + previews
+		}
 		return text + "\n事件 ID：" + event.EventID
 	}
 	if event.Type == "alert" {

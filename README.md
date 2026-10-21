@@ -60,7 +60,7 @@ Docker Compose 已将 `/usr/local/anquan-agent/dist` 同路径只读挂入 Maste
 
 `security.native_fim.capture_created_content` 默认开启，配套新版 Agent 在监控基线建立后，对新建的非敏感文本文件留存已观察到的内容版本，并在修改和删除事件中附带可用的前后内容。显式设置为 `false` 可关闭此自动留存；`report_changes` 仍默认关闭，独立控制已有文件的文本差异。内容受 `max_diff_bytes` 与传输大小限制，二进制、敏感路径、截断及未捕获状态在事件明细中明确标注。此功能不扩大监控路径，也不能恢复 Agent 尚未读取即已消失的文件。
 
-原生文件事件保持 `native_fim/file_change` 协议，通过 `details.change` 区分新增、修改、删除或缺失；正文和前后元数据保存在事件 `details` 中。聊天通知显示具体操作、路径和内容留存摘要，不附带完整文件正文；通用 Webhook 的 `data` 继续保留完整原始事件。Agent 聚合同一写入过程并排除编辑器临时文件后，一条变更上报只生成一个通知任务；Master 对相同事件 ID 的确认补传继续去重，不按时间窗口丢弃不同变更。
+原生文件事件保持 `native_fim/file_change` 协议，通过 `details.change` 区分新增、修改、删除或缺失；正文和前后元数据保存在事件 `details` 中。聊天通知在同一条消息中显示具体操作、路径、内容留存摘要，以及变更前、变更后内容预览；每侧最多 512 个 UTF-8 字节，截断会明确标记，完整已留存版本在平台事件详情查看。空文件、不适用、敏感、二进制、关闭留存和未捕获状态分别显示，不把不应预览的文本带入通知；通用 Webhook 的 `data` 继续保留完整原始事件。Agent 聚合同一写入过程并排除编辑器临时文件后，一条变更上报只生成一个通知任务；Master 对相同事件 ID 的确认补传继续去重，不按时间窗口丢弃不同变更。
 
 `GET /api/security/status` 返回每台机器最新组件快照；`GET /api/events?type=security_event` 查看通过主控筛选的审计事件。组件状态不触发 webhook；通过当前入库策略且有效级别为 `warning/error/critical` 的安全事件进入现有持久通知队列。快照按 Agent 事件时间更新，延迟上报不会覆盖较新状态。
 
