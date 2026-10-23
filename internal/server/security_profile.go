@@ -2,12 +2,14 @@ package server
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -35,15 +37,16 @@ var securityProfileSchema = profileObject(map[string]profileField{
 	"tetragon": profileObject(map[string]profileField{"enabled": {kind: "bool"}, "version": {kind: "string"}, "download_url": {kind: "string"}, "sha256": {kind: "string"}, "config": {kind: "string"}, "tracing_policy": {kind: "string"}}),
 	"sudo": profileObject(map[string]profileField{
 		"enabled": {kind: "bool"}, "io_logging": {kind: "bool"}, "upload_io": {kind: "bool"}, "max_session_bytes": {kind: "int"},
-		"grants": {kind: "objects", maximum: 128, fields: map[string]profileField{"user": {kind: "string"}, "run_as": {kind: "string"}, "commands": {kind: "strings"}, "nopasswd": {kind: "bool"}}},
+		"restrict_users": {kind: "strings"},
+		"grants":         {kind: "objects", maximum: 128, fields: map[string]profileField{"user": {kind: "string"}, "run_as": {kind: "string"}, "commands": {kind: "strings"}, "nopasswd": {kind: "bool"}}},
 	}),
 	"native_fim": profileObject(map[string]profileField{"enabled": {kind: "bool"}, "paths": {kind: "strings"}, "poll_interval_seconds": {kind: "int"}, "report_changes": {kind: "bool"}, "capture_created_content": {kind: "bool"}, "max_diff_bytes": {kind: "int"}}),
 	"ssh_auth":   profileObject(map[string]profileField{"enabled": {kind: "bool"}, "poll_interval_seconds": {kind: "int", minimum: 1, maximum: 300}, "initial_lookback_seconds": {kind: "int", minimum: 1, maximum: 86400}, "alert_threshold": {kind: "int", minimum: 1, maximum: 1000}, "window_seconds": {kind: "int", minimum: 10, maximum: 86400}}),
 	"policies": profileObject(map[string]profileField{
 		"mode":   {kind: "string", choices: "audit|enforce"},
-		"ssh":    profileObject(map[string]profileField{"enabled": {kind: "bool"}, "password_authentication": {kind: "string", choices: "yes|no"}, "permit_root_login": {kind: "string", choices: "yes|no|prohibit-password"}, "allow_users": {kind: "strings"}, "allow_sources": {kind: "strings"}}),
+		"ssh":    profileObject(map[string]profileField{"enabled": {kind: "bool"}, "password_authentication": {kind: "string", choices: "yes|no"}, "permit_root_login": {kind: "string", choices: "yes|no|prohibit-password"}, "allow_users": {kind: "strings"}, "allow_sources": {kind: "strings"}, "disable_forwarding": {kind: "bool"}, "strong_crypto": {kind: "bool"}}),
 		"sysctl": {kind: "stringmap"}, "session_timeout_seconds": {kind: "int"}, "disable_ctrl_alt_del": {kind: "bool"},
-		"grub": profileObject(map[string]profileField{"enabled": {kind: "bool"}, "password_hash": {kind: "string"}}),
+		"grub": profileObject(map[string]profileField{"enabled": {kind: "bool"}, "password_hash": {kind: "string"}, "protect_single_user": {kind: "bool"}}),
 	}),
 })
 
@@ -87,6 +90,19 @@ func validateProfileValue(value any, field profileField, path string) error {
 				return invalid()
 			}
 		}
+		if path == "security.sudo.restrict_users" {
+			if len(v) > 128 {
+				return invalid()
+			}
+			seen := map[string]bool{}
+			for _, item := range v {
+				user := item.(string)
+				if user == "root" || user == "ALL" || !sudoAccountName.MatchString(user) || len(user) > 256 || seen[user] {
+					return fmt.Errorf("%s 必须为不重复的普通本机账户名称，不能为 root 或 ALL", path)
+				}
+				seen[user] = true
+			}
+		}
 	case "objects":
 		items, ok := value.([]any)
 		if !ok || len(items) > int(field.maximum) {
@@ -113,6 +129,11 @@ func validateProfileValue(value any, field profileField, path string) error {
 				return invalid()
 			}
 		}
+		if path == "security.policies.sysctl" {
+			if err := validateSysctlProfile(v); err != nil {
+				return err
+			}
+		}
 	case "object":
 		v, ok := value.(map[string]any)
 		if !ok {
@@ -132,6 +153,79 @@ func validateProfileValue(value any, field profileField, path string) error {
 }
 
 var sudoAccountName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.-]*\$?$`)
+var profileSysctlKey = regexp.MustCompile(`^[a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_-]+)+$`)
+var grubPasswordHash = regexp.MustCompile(`^grub\.pbkdf2\.sha512\.[0-9]+\.[A-Fa-f0-9]+\.[A-Fa-f0-9]+$`)
+
+func validProfileGRUBPasswordHash(hash string) bool {
+	if len(hash) > 4096 || !grubPasswordHash.MatchString(hash) {
+		return false
+	}
+	parts := strings.Split(hash, ".")
+	iterations, err := strconv.ParseUint(parts[3], 10, 32)
+	if err != nil || iterations == 0 || strconv.FormatUint(iterations, 10) != parts[3] {
+		return false
+	}
+	for _, value := range parts[4:] {
+		if _, err := hex.DecodeString(value); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func validateSysctlProfile(values map[string]any) error {
+	if len(values) > 256 {
+		return fmt.Errorf("security.policies.sysctl 最多包含 256 项")
+	}
+	limits := map[string]int{"kernel.dmesg_restrict": 1, "kernel.kptr_restrict": 2, "net.ipv4.conf.all.rp_filter": 2, "net.ipv4.tcp_syncookies": 2}
+	for key, value := range values {
+		text, ok := value.(string)
+		if !ok || !profileSysctlKey.MatchString(key) || len(text) > 128 || strings.TrimSpace(text) == "" || strings.ContainsAny(text, "\r\n\x00") {
+			return fmt.Errorf("security.policies.sysctl.%s 参数格式无效", key)
+		}
+		if limit, known := limits[key]; known {
+			number, err := strconv.Atoi(text)
+			if err != nil || number < 0 || number > limit || strconv.Itoa(number) != text {
+				return fmt.Errorf("security.policies.sysctl.%s 必须为 0–%d 的规范十进制字符串", key, limit)
+			}
+		}
+	}
+	return nil
+}
+
+// Cross-field requirements use the composed profile, so a small patch cannot
+// bypass constraints by leaving its related fields in the original YAML.
+func validateHardeningProfile(profile any) error {
+	security, _ := profile.(map[string]any)
+	policies, _ := security["policies"].(map[string]any)
+	if timeout, present := policies["session_timeout_seconds"]; present {
+		var seconds int
+		switch value := timeout.(type) {
+		case int:
+			seconds = value
+		case float64:
+			seconds = int(value)
+		default:
+			return fmt.Errorf("security.policies.session_timeout_seconds 必须为整数")
+		}
+		if seconds != 0 && (seconds < 60 || seconds > 86400) {
+			return fmt.Errorf("security.policies.session_timeout_seconds 必须为 0 或 60–86400")
+		}
+	}
+	grub, _ := policies["grub"].(map[string]any)
+	enabled, _ := grub["enabled"].(bool)
+	protect, _ := grub["protect_single_user"].(bool)
+	if protect && !enabled {
+		return fmt.Errorf("security.policies.grub.protect_single_user 需要开启 GRUB 策略")
+	}
+	if enabled && policies["mode"] == "enforce" {
+		hash, _ := grub["password_hash"].(string)
+		if !validProfileGRUBPasswordHash(hash) {
+			return fmt.Errorf("GRUB enforce 需要 grub-mkpasswd-pbkdf2 生成的 grub.pbkdf2.sha512 哈希")
+		}
+	}
+	return nil
+}
 
 func validateSudoGrantProfile(grant map[string]any, path string) error {
 	user, ok := grant["user"].(string)
@@ -293,6 +387,9 @@ func composeProfile(config string, patch map[string]any) (string, any, error) {
 	if patch == nil {
 		return config, profile, nil
 	}
+	if err := validateHardeningProfile(profile); err != nil {
+		return "", nil, err
+	}
 	var output bytes.Buffer
 	encoder := yaml.NewEncoder(&output)
 	encoder.SetIndent(2)
@@ -344,9 +441,9 @@ func (s *Server) securityProfileDefaults(w http.ResponseWriter, r *http.Request)
 		"enabled": true, "install_missing": true, "poll_interval_seconds": 2, "status_interval_seconds": 30, "max_queue_events": 10000,
 		"auditd":     map[string]any{"enabled": true, "audit_exec": true, "watch_paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "rules": []string{}},
 		"tetragon":   map[string]any{"enabled": false, "version": "v1.7.1", "download_url": "", "sha256": "", "config": "", "tracing_policy": ""},
-		"sudo":       map[string]any{"enabled": true, "io_logging": true, "upload_io": false, "max_session_bytes": 20971520, "grants": []any{}},
+		"sudo":       map[string]any{"enabled": true, "io_logging": true, "upload_io": false, "max_session_bytes": 20971520, "restrict_users": []string{}, "grants": []any{}},
 		"native_fim": map[string]any{"enabled": true, "paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "poll_interval_seconds": 30, "report_changes": false, "capture_created_content": true, "max_diff_bytes": 8192},
 		"ssh_auth":   map[string]any{"enabled": true, "poll_interval_seconds": 5, "initial_lookback_seconds": 300, "alert_threshold": 5, "window_seconds": 300},
-		"policies":   map[string]any{"mode": "audit", "ssh": map[string]any{"enabled": false, "password_authentication": "no", "permit_root_login": "prohibit-password", "allow_users": []string{}, "allow_sources": []string{}}, "sysctl": map[string]string{}, "session_timeout_seconds": 0, "disable_ctrl_alt_del": false, "grub": map[string]any{"enabled": false, "password_hash": ""}},
+		"policies":   map[string]any{"mode": "audit", "ssh": map[string]any{"enabled": false, "password_authentication": "no", "permit_root_login": "prohibit-password", "allow_users": []string{}, "allow_sources": []string{}, "disable_forwarding": false, "strong_crypto": false}, "sysctl": map[string]string{}, "session_timeout_seconds": 0, "disable_ctrl_alt_del": false, "grub": map[string]any{"enabled": false, "password_hash": "", "protect_single_user": false}},
 	}})
 }

@@ -38,6 +38,8 @@ func validateComponentStatus(data json.RawMessage) error {
 			Version    string     `json:"version"`
 			ConfigHash string     `json:"config_hash"`
 			AppliedAt  *time.Time `json:"applied_at"`
+			PolicyMode string     `json:"policy_mode"`
+			CheckedAt  *time.Time `json:"checked_at"`
 			Error      string     `json:"error"`
 			Message    string     `json:"message"`
 		} `json:"components"`
@@ -47,6 +49,9 @@ func validateComponentStatus(data json.RawMessage) error {
 	}
 	names := map[string]bool{}
 	for _, component := range report.Components {
+		if component.PolicyMode != "" && component.PolicyMode != "audit" && component.PolicyMode != "enforce" {
+			return fmt.Errorf("invalid policy mode in component status")
+		}
 		if strings.TrimSpace(component.Name) == "" || len(component.Name) > 64 || names[component.Name] || len(component.State) > 128 || len(component.Version) > 256 || len(component.ConfigHash) > 128 || len(component.Error) > 4096 || len(component.Message) > 4096 {
 			return fmt.Errorf("invalid component status entry")
 		}
