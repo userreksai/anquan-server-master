@@ -20,6 +20,7 @@ type componentState struct {
 	State      string          `json:"state"`
 	Version    string          `json:"version"`
 	ConfigHash string          `json:"config_hash"`
+	PolicyMode string          `json:"policy_mode,omitempty"`
 	Error      string          `json:"error"`
 	Message    string          `json:"message"`
 	Checks     json.RawMessage `json:"checks,omitempty"`
@@ -33,7 +34,7 @@ func (c componentState) abnormal() bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(c.State)) {
-	case "error", "failed", "install_failed", "config_failed", "degraded", "unsupported", "drift", "stopped", "missing", "not_installed":
+	case "error", "failed", "install_failed", "config_failed", "degraded", "unsupported", "drift", "audit_drift", "stopped", "missing", "not_installed":
 		return true
 	default:
 		return false
