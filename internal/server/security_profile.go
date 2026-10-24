@@ -436,13 +436,21 @@ func (s *Server) composeSecurityProfile(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]any{"yaml": config, "security": profile})
 }
 
+func defaultSecurityWatchPaths() []string {
+	return []string{
+		"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d",
+		"/etc/crontab", "/etc/cron.d", "/etc/cron.hourly", "/etc/cron.daily", "/etc/cron.weekly", "/etc/cron.monthly",
+		"/etc/cron.allow", "/etc/cron.deny", "/var/spool/cron", "/etc/anacrontab", "/etc/cron.yearly",
+	}
+}
+
 func (s *Server) securityProfileDefaults(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"security": map[string]any{
 		"enabled": true, "install_missing": true, "poll_interval_seconds": 2, "status_interval_seconds": 30, "max_queue_events": 10000,
-		"auditd":     map[string]any{"enabled": true, "audit_exec": true, "watch_paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "rules": []string{}},
+		"auditd":     map[string]any{"enabled": true, "audit_exec": true, "watch_paths": defaultSecurityWatchPaths(), "rules": []string{}},
 		"tetragon":   map[string]any{"enabled": false, "version": "v1.7.1", "download_url": "", "sha256": "", "config": "", "tracing_policy": ""},
 		"sudo":       map[string]any{"enabled": true, "io_logging": true, "upload_io": false, "max_session_bytes": 20971520, "restrict_users": []string{}, "grants": []any{}},
-		"native_fim": map[string]any{"enabled": true, "paths": []string{"/etc/passwd", "/etc/group", "/etc/shadow", "/etc/ssh", "/etc/sudoers", "/etc/sudoers.d", "/etc/crontab", "/etc/cron.d"}, "poll_interval_seconds": 30, "report_changes": false, "capture_created_content": true, "max_diff_bytes": 8192},
+		"native_fim": map[string]any{"enabled": true, "paths": defaultSecurityWatchPaths(), "poll_interval_seconds": 30, "report_changes": false, "capture_created_content": true, "max_diff_bytes": 8192},
 		"ssh_auth":   map[string]any{"enabled": true, "poll_interval_seconds": 5, "initial_lookback_seconds": 300, "alert_threshold": 5, "window_seconds": 300},
 		"policies":   map[string]any{"mode": "audit", "ssh": map[string]any{"enabled": false, "password_authentication": "no", "permit_root_login": "prohibit-password", "allow_users": []string{}, "allow_sources": []string{}, "disable_forwarding": false, "strong_crypto": false}, "sysctl": map[string]string{}, "session_timeout_seconds": 0, "disable_ctrl_alt_del": false, "grub": map[string]any{"enabled": false, "password_hash": "", "protect_single_user": false}},
 	}})
