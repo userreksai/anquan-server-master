@@ -57,7 +57,7 @@ func validateComponentStatus(data json.RawMessage) error {
 		}
 		names[component.Name] = true
 	}
-	return nil
+	return validateSSHAccountsInventory(data)
 }
 
 type SecurityStatus struct {

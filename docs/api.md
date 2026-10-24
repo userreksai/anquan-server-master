@@ -185,11 +185,11 @@ security:
   auditd:
     enabled: true
     audit_exec: true
-    watch_paths: [/etc/passwd, /etc/group, /etc/shadow, /etc/ssh, /etc/sudoers, /etc/sudoers.d, /etc/crontab, /etc/cron.d]
+    watch_paths: [/etc/passwd, /etc/group, /etc/shadow, /etc/ssh, /etc/sudoers, /etc/sudoers.d, /etc/crontab, /etc/cron.d, /etc/cron.hourly, /etc/cron.daily, /etc/cron.weekly, /etc/cron.monthly, /etc/cron.allow, /etc/cron.deny, /var/spool/cron, /etc/anacrontab, /etc/cron.yearly]
     rules: []
   native_fim:
     enabled: true
-    paths: [/etc/passwd, /etc/group, /etc/shadow, /etc/ssh, /etc/sudoers, /etc/sudoers.d, /etc/crontab, /etc/cron.d]
+    paths: [/etc/passwd, /etc/group, /etc/shadow, /etc/ssh, /etc/sudoers, /etc/sudoers.d, /etc/crontab, /etc/cron.d, /etc/cron.hourly, /etc/cron.daily, /etc/cron.weekly, /etc/cron.monthly, /etc/cron.allow, /etc/cron.deny, /var/spool/cron, /etc/anacrontab, /etc/cron.yearly]
     poll_interval_seconds: 30
     report_changes: false
     max_diff_bytes: 8192
@@ -229,6 +229,8 @@ security:
 ```
 
 原有配置没有 `security` 时继续兼容，不隐式开启安装。表单范例主动开启基础审计和文件属性监控，Tetragon 和 I/O 上传按需启用；`policies.mode: audit` 默认只检查主机加固策略。Master 验证配置形状与字段名，Agent 完成对应平台、路径、范围和实际执行校验。
+
+基础预设覆盖上述标准 cron/anacron 路径，读取或合成旧配置时保留已有路径数组，不自动扩展或切换 `enforce`。这些标准路径已存在时先建立基线；起初不存在时不创建、不产生缺失告警，后续出现后自动纳入监控。原生 FIM 使用 Linux 实时通知与定期补扫发现状态变化，短时间内多次写入可能合并，不保证每个原始写操作独立告警。敏感文件内容保护、二进制正文排除和编辑器临时文件通知排除保持生效。
 
 `security.sudo.grants` 为整体替换的授权数组，最多 128 项：`{user:string,run_as?:string,commands:string[],nopasswd?:boolean}`。user/run_as 是本机账户名称，run_as 留空或省略使用 root；commands 每项为绝对命令路径，可附字面参数，每条最多 1024 字节，每个授权 1–64 条命令，拒绝 sudoers 元字符、通配符和换行；nopasswd 默认 false。例：`{user: ops, run_as: root, commands: ["/usr/bin/systemctl restart nginx.service"], nopasswd: false}`。Agent 只管理自己的 sudoers 片段，不删除其他已有的 sudo、wheel 或云镜像广泛授权；新增授权不能证明用户已经实现最小权限。未指定命令参数时也应了解该二进制允许的参数及提权能力。授权变更的实际应用仍由 Agent 策略和校验结果决定。
 
